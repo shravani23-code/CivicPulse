@@ -18,9 +18,13 @@ function Home() {
           <a href="#about">About</a>
         </div>
 
-        <button className="nav-button">
-          Login
-        </button>
+        {/* Admin Dashboard */}
+        <a
+          href="/admin"
+          className="nav-button"
+        >
+          Admin Dashboard
+        </a>
 
       </nav>
 
@@ -46,19 +50,19 @@ function Home() {
 
           <div className="hero-buttons">
 
-           <a
-  href="/report-complaint"
-  className="primary-button"
->
-  Report a Complaint
-</a>
+            <a
+              href="/report-complaint"
+              className="primary-button"
+            >
+              Report a Complaint
+            </a>
 
-          <a
-  href="/track-complaint"
-  className="secondary-button"
->
-  Track Complaint
-</a>
+            <a
+              href="/track-complaint"
+              className="secondary-button"
+            >
+              Track Complaint
+            </a>
 
           </div>
 
@@ -71,6 +75,7 @@ function Home() {
           <div className="card-header">
 
             <div>
+
               <p className="card-small-title">
                 LIVE CIVIC OVERVIEW
               </p>
@@ -78,6 +83,7 @@ function Home() {
               <h2>
                 City Status
               </h2>
+
             </div>
 
             <span className="status-dot"></span>

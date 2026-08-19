@@ -1,18 +1,48 @@
 const express = require('express')
+const { spawn } = require('child_process')
+const path = require('path')
 const cors = require('cors')
 const mongoose = require('mongoose')
 require('dotenv').config()
 
+
 const app = express()
 const PORT = 5000
+
+
+// ======================================
+// MIDDLEWARE
+// ======================================
 
 app.use(cors())
 app.use(express.json())
 
 
-// ===============================
-// MongoDB Complaint Schema
-// ===============================
+// ======================================
+// PRIORITY CALCULATION
+// ======================================
+
+function calculatePriority(severity) {
+
+  if (severity === 'Critical') {
+    return 40
+  }
+
+  if (severity === 'High') {
+    return 30
+  }
+
+  if (severity === 'Medium') {
+    return 20
+  }
+
+  return 10
+}
+
+
+// ======================================
+// MONGODB COMPLAINT SCHEMA
+// ======================================
 
 const complaintSchema = new mongoose.Schema({
 
@@ -53,9 +83,34 @@ const complaintSchema = new mongoose.Schema({
   },
 
   priority: {
-    type: String,
-    default: 'Not calculated'
+    type: Number,
+    default: 10
   },
+
+  // ======================================
+  // COMPLAINT HISTORY
+  // ======================================
+
+  history: [
+
+    {
+      status: {
+        type: String,
+        required: true
+      },
+
+      timestamp: {
+        type: Date,
+        default: Date.now
+      },
+
+      description: {
+        type: String,
+        default: ''
+      }
+    }
+
+  ],
 
   createdAt: {
     type: Date,
@@ -64,228 +119,1290 @@ const complaintSchema = new mongoose.Schema({
 
 })
 
-const Complaint = mongoose.model(
-  'Complaint',
-  complaintSchema
-)
+
+const Complaint =
+  mongoose.model(
+    'Complaint',
+    complaintSchema
+  )
 
 
-// ===============================
-// Home
-// ===============================
+// ======================================
+// HOME
+// ======================================
 
 app.get('/', (req, res) => {
 
   res.json({
-    message: 'CivicPulse Backend is running!'
+
+    message:
+      'CivicPulse Backend is running!'
+
   })
 
 })
 
 
-// ===============================
-// Get All Complaints
-// ===============================
+// ======================================
+// GET ALL COMPLAINTS
+// ======================================
 
-app.get('/api/complaints', async (req, res) => {
+app.get(
+  '/api/complaints',
+  async (req, res) => {
 
-  try {
+    try {
 
-    const complaints = await Complaint.find()
-      .sort({ createdAt: -1 })
-
-    res.json(complaints)
-
-  } catch (error) {
-
-    console.error(error)
-
-    res.status(500).json({
-      message: 'Failed to fetch complaints.'
-    })
-
-  }
-
-})
+      const complaints =
+        await Complaint.find()
+          .sort({
+            createdAt: -1
+          })
 
 
-// ===============================
-// Submit Complaint
-// ===============================
-
-app.post('/api/complaints', async (req, res) => {
-
-  try {
-
-    const {
-      title,
-      category,
-      description,
-      location,
-      severity
-    } = req.body
+      res.json(
+        complaints
+      )
 
 
-    // Validate required fields
+    } catch (error) {
 
-    if (
-      !title ||
-      !category ||
-      !description ||
-      !location ||
-      !severity
-    ) {
+      console.error(
+        'Error fetching complaints:',
+        error
+      )
 
-      return res.status(400).json({
-        message: 'Please provide all required complaint details.'
+
+      res.status(500).json({
+
+        message:
+          'Failed to fetch complaints.',
+
+        error:
+          error.message
+
       })
 
     }
 
-
-    // Generate Complaint ID
-
-    const complaintId =
-      'CP' + Date.now().toString().slice(-8)
-
-
-    // Create complaint
-function calculatePriority(severity) {
-
-  if (severity === 'Critical') {
-    return 40
   }
-
-  if (severity === 'High') {
-    return 30
-  }
-
-  if (severity === 'Medium') {
-    return 20
-  }
-
-  return 10
-}
-    const complaint = new Complaint({
-
-      id: complaintId,
-
-      title: title,
-
-      category: category,
-
-      description: description,
-
-      location: location,
-
-      severity: severity,
-
-      status: 'Pending',
-
-     priority: calculatePriority(severity)
-    })
+)
 
 
-    // Save to MongoDB
+// ======================================
+// PRIORITY COMPLAINTS
+// C++ MAX HEAP
+// ======================================
 
-    await complaint.save()
+app.get(
+  '/api/complaints/priority',
+  async (req, res) => {
 
+    try {
 
-    console.log(
-      'Complaint saved to MongoDB:',
-      complaint.id
-    )
-
-
-    res.status(201).json({
-
-      message: 'Complaint submitted successfully.',
-
-      complaint: complaint
-
-    })
+      console.log(
+        'Priority API called'
+      )
 
 
-  } catch (error) {
-
-    console.error(
-      'Error saving complaint:',
-      error
-    )
-
-    res.status(500).json({
-      message: 'Failed to save complaint.'
-    })
-
-  }
-
-})
+      const complaints =
+        await Complaint.find()
 
 
-// ===============================
-// Get Complaint By ID
-// ===============================
+      // ==================================
+      // REPAIR OLD PRIORITY VALUES
+      // ==================================
 
-app.get('/api/complaints/:id', async (req, res) => {
+      for (
+        const complaint of complaints
+      ) {
 
-  try {
+        if (
+          typeof complaint.priority !== 'number' ||
+          Number.isNaN(
+            complaint.priority
+          )
+        ) {
 
-    const complaint = await Complaint.findOne({
-      id: req.params.id
-    })
+          complaint.priority =
+            calculatePriority(
+              complaint.severity
+            )
 
 
-    if (!complaint) {
+          await complaint.save()
 
-      return res.status(404).json({
-        message: 'Complaint not found.'
+        }
+
+      }
+
+
+      // ==================================
+      // C++ ENGINE PATH
+      // ==================================
+
+      const cppPath =
+        path.join(
+          __dirname,
+          '..',
+          'dsa',
+          'priority_engine.exe'
+        )
+
+
+      console.log(
+        'Starting C++ Priority Engine:',
+        cppPath
+      )
+
+
+      const cppProcess =
+        spawn(cppPath)
+
+
+      let output = ''
+      let errorOutput = ''
+
+
+      cppProcess.on(
+        'error',
+        (error) => {
+
+          console.error(
+            'Could not start Priority Engine:',
+            error
+          )
+
+        }
+      )
+
+
+      // ==================================
+      // SEND DATA TO C++
+      // ==================================
+
+      for (
+        const complaint of complaints
+      ) {
+
+        const line =
+          `${complaint.id}|` +
+          `${complaint.title}|` +
+          `${complaint.category}|` +
+          `${complaint.severity}\n`
+
+
+        cppProcess.stdin.write(
+          line
+        )
+
+      }
+
+
+      cppProcess.stdin.end()
+
+
+      // ==================================
+      // C++ OUTPUT
+      // ==================================
+
+      cppProcess.stdout.on(
+        'data',
+        (data) => {
+
+          output +=
+            data.toString()
+
+        }
+      )
+
+
+      cppProcess.stderr.on(
+        'data',
+        (data) => {
+
+          errorOutput +=
+            data.toString()
+
+        }
+      )
+
+
+      // ==================================
+      // C++ FINISHED
+      // ==================================
+
+      cppProcess.on(
+        'close',
+        (code) => {
+
+          console.log(
+            'Priority engine finished:',
+            code
+          )
+
+
+          if (code !== 0) {
+
+            console.error(
+              'Priority Engine error:',
+              errorOutput
+            )
+
+
+            return res.status(500).json({
+
+              message:
+                'C++ Priority Engine failed.',
+
+              error:
+                errorOutput
+
+            })
+
+          }
+
+
+          const lines =
+            output
+              .trim()
+              .split('\n')
+              .filter(
+                line =>
+                  line.trim().length > 0
+              )
+
+
+          const rankedComplaints =
+            lines.map(
+              (line) => {
+
+                const [
+
+                  id,
+                  title,
+                  category,
+                  severity,
+                  priority
+
+                ] =
+                  line.split('|')
+
+
+                const originalComplaint =
+                  complaints.find(
+                    complaint =>
+                      complaint.id === id
+                  )
+
+
+                return {
+
+                  id:
+                    id || '',
+
+                  title:
+                    title || '',
+
+                  category:
+                    category || '',
+
+                  severity:
+                    severity || '',
+
+                  priority:
+                    Number(priority) || 0,
+
+                  location:
+                    originalComplaint
+                      ? originalComplaint.location
+                      : '',
+
+                  status:
+                    originalComplaint
+                      ? originalComplaint.status
+                      : 'Pending'
+
+                }
+
+              }
+            )
+
+
+          res.json({
+
+            message:
+              'Complaints ranked using C++ Max Heap',
+
+            complaints:
+              rankedComplaints
+
+          })
+
+        }
+      )
+
+
+    } catch (error) {
+
+      console.error(
+        'Priority integration error:',
+        error
+      )
+
+
+      res.status(500).json({
+
+        message:
+          'Failed to process complaints.',
+
+        error:
+          error.message
+
       })
 
     }
 
+  }
+)
 
-    res.json(complaint)
+
+// ======================================
+// COMPLAINT HISTORY
+// C++ LINKED LIST
+// ======================================
+
+app.get(
+  '/api/complaints/:id/history',
+  async (req, res) => {
+
+    try {
+
+      console.log(
+        'History API called:',
+        req.params.id
+      )
 
 
-  } catch (error) {
+      // ==================================
+      // FIND COMPLAINT
+      // ==================================
 
-    console.error(error)
+      const complaint =
+        await Complaint.findOne({
 
-    res.status(500).json({
-      message: 'Failed to fetch complaint.'
-    })
+          id:
+            req.params.id
+
+        })
+
+
+      if (!complaint) {
+
+        return res.status(404).json({
+
+          message:
+            'Complaint not found.'
+
+        })
+
+      }
+
+
+      // ==================================
+      // REPAIR OLD PRIORITY
+      // ==================================
+
+      if (
+        typeof complaint.priority !== 'number' ||
+        Number.isNaN(
+          complaint.priority
+        )
+      ) {
+
+        complaint.priority =
+          calculatePriority(
+            complaint.severity
+          )
+
+      }
+
+
+      // ==================================
+      // CREATE HISTORY FOR OLD COMPLAINTS
+      // ==================================
+
+      if (
+        !Array.isArray(
+          complaint.history
+        ) ||
+        complaint.history.length === 0
+      ) {
+
+        const history = [
+
+          {
+
+            status:
+              'Pending',
+
+            timestamp:
+              complaint.createdAt ||
+              new Date(),
+
+            description:
+              'Complaint was submitted.'
+
+          }
+
+        ]
+
+
+        if (
+          complaint.status ===
+          'In Progress'
+        ) {
+
+          history.push({
+
+            status:
+              'In Progress',
+
+            timestamp:
+              new Date(),
+
+            description:
+              'Complaint is currently being processed.'
+
+          })
+
+        }
+
+
+        if (
+          complaint.status ===
+          'Resolved'
+        ) {
+
+          history.push({
+
+            status:
+              'In Progress',
+
+            timestamp:
+              new Date(),
+
+            description:
+              'Complaint was processed by the authority.'
+
+          })
+
+
+          history.push({
+
+            status:
+              'Resolved',
+
+            timestamp:
+              new Date(),
+
+            description:
+              'Complaint was marked as resolved.'
+
+          })
+
+        }
+
+
+        complaint.history =
+          history
+
+      }
+
+
+      // ==================================
+      // SAVE REPAIRED COMPLAINT
+      // ==================================
+
+      await complaint.save()
+
+
+      // ==================================
+      // C++ LINKED LIST ENGINE
+      // ==================================
+
+      const cppPath =
+        path.join(
+          __dirname,
+          '..',
+          'dsa',
+          'history_engine.exe'
+        )
+
+
+      console.log(
+        'Starting History Engine:',
+        cppPath
+      )
+
+
+      const cppProcess =
+        spawn(cppPath)
+
+
+      let output = ''
+      let errorOutput = ''
+
+
+      cppProcess.on(
+        'error',
+        (error) => {
+
+          console.error(
+            'Could not start History Engine:',
+            error
+          )
+
+        }
+      )
+
+
+      // ==================================
+      // SEND HISTORY TO C++
+      // ==================================
+
+      for (
+        const item of complaint.history
+      ) {
+
+        const timestamp =
+          new Date(
+            item.timestamp
+          ).toISOString()
+
+
+        const line =
+          `${item.status}|` +
+          `${timestamp}|` +
+          `${item.description || ''}\n`
+
+
+        cppProcess.stdin.write(
+          line
+        )
+
+      }
+
+
+      cppProcess.stdin.end()
+
+
+      // ==================================
+      // RECEIVE C++ OUTPUT
+      // ==================================
+
+      cppProcess.stdout.on(
+        'data',
+        (data) => {
+
+          output +=
+            data.toString()
+
+        }
+      )
+
+
+      cppProcess.stderr.on(
+        'data',
+        (data) => {
+
+          errorOutput +=
+            data.toString()
+
+        }
+      )
+
+
+      // ==================================
+      // C++ PROCESS FINISHED
+      // ==================================
+
+      cppProcess.on(
+        'close',
+        (code) => {
+
+          if (code !== 0) {
+
+            console.error(
+              'History Engine error:',
+              errorOutput
+            )
+
+
+            return res.status(500).json({
+
+              message:
+                'C++ History Engine failed.',
+
+              error:
+                errorOutput
+
+            })
+
+          }
+
+
+          // ==================================
+          // CONVERT OUTPUT TO JSON
+          // ==================================
+
+          const lines =
+            output
+              .trim()
+              .split('\n')
+              .filter(
+                line =>
+                  line.trim().length > 0
+              )
+
+
+          const historyResult =
+            lines.map(
+              (line) => {
+
+                const parts =
+                  line.split('|')
+
+
+                return {
+
+                  status:
+                    parts[0] || '',
+
+                  timestamp:
+                    parts[1] || '',
+
+                  description:
+                    parts
+                      .slice(2)
+                      .join('|') || ''
+
+                }
+
+              }
+            )
+
+
+          res.json({
+
+            message:
+              'Complaint history processed using C++ Linked List',
+
+            history:
+              historyResult
+
+          })
+
+        }
+      )
+
+
+    } catch (error) {
+
+      console.error(
+        'History integration error:',
+        error
+      )
+
+
+      res.status(500).json({
+
+        message:
+          'Failed to process complaint history.',
+
+        error:
+          error.message
+
+      })
+
+    }
 
   }
+)
 
-})
+
+// ======================================
+// SUBMIT COMPLAINT
+// ======================================
+
+app.post(
+  '/api/complaints',
+  async (req, res) => {
+
+    try {
+
+      const {
+
+        title,
+        category,
+        description,
+        location,
+        severity
+
+      } =
+        req.body
 
 
-// ===============================
-// Connect MongoDB + Start Server
-// ===============================
+      // ==================================
+      // VALIDATION
+      // ==================================
+
+      if (
+        !title ||
+        !category ||
+        !description ||
+        !location ||
+        !severity
+      ) {
+
+        return res.status(400).json({
+
+          message:
+            'Please provide all required complaint details.'
+
+        })
+
+      }
+
+
+      // ==================================
+      // GENERATE ID
+      // ==================================
+
+      const complaintId =
+        'CP' +
+        Date.now()
+          .toString()
+          .slice(-8)
+
+
+      // ==================================
+      // CALCULATE PRIORITY
+      // ==================================
+
+      const priority =
+        calculatePriority(
+          severity
+        )
+
+
+      // ==================================
+      // CREATE COMPLAINT
+      // ==================================
+
+      const complaint =
+        new Complaint({
+
+          id:
+            complaintId,
+
+          title:
+            title,
+
+          category:
+            category,
+
+          description:
+            description,
+
+          location:
+            location,
+
+          severity:
+            severity,
+
+          status:
+            'Pending',
+
+          priority:
+            priority,
+
+          history: [
+
+            {
+
+              status:
+                'Pending',
+
+              timestamp:
+                new Date(),
+
+              description:
+                'Complaint submitted by citizen.'
+
+            }
+
+          ]
+
+        })
+
+
+      // ==================================
+      // SAVE
+      // ==================================
+
+      await complaint.save()
+
+
+      console.log(
+        'Complaint saved:',
+        complaint.id
+      )
+
+
+      res.status(201).json({
+
+        message:
+          'Complaint submitted successfully.',
+
+        complaint:
+          complaint
+
+      })
+
+
+    } catch (error) {
+
+      console.error(
+        'Error saving complaint:',
+        error
+      )
+
+
+      res.status(500).json({
+
+        message:
+          'Failed to save complaint.',
+
+        error:
+          error.message
+
+      })
+
+    }
+
+  }
+)
+
+
+// ======================================
+// UPDATE COMPLAINT STATUS
+// ======================================
+
+app.put(
+  '/api/complaints/:id/status',
+  async (req, res) => {
+
+    try {
+
+      const {
+        status
+      } =
+        req.body
+
+
+      // ==================================
+      // VALID STATUSES
+      // ==================================
+
+      const allowedStatuses = [
+
+        'Pending',
+        'In Progress',
+        'Resolved'
+
+      ]
+
+
+      if (
+        !allowedStatuses.includes(
+          status
+        )
+      ) {
+
+        return res.status(400).json({
+
+          message:
+            'Invalid status. Use Pending, In Progress or Resolved.'
+
+        })
+
+      }
+
+
+      // ==================================
+      // FIND COMPLAINT
+      // ==================================
+
+      const complaint =
+        await Complaint.findOne({
+
+          id:
+            req.params.id
+
+        })
+
+
+      if (!complaint) {
+
+        return res.status(404).json({
+
+          message:
+            'Complaint not found.'
+
+        })
+
+      }
+
+
+      // ==================================
+      // REPAIR OLD PRIORITY
+      // ==================================
+
+      if (
+        typeof complaint.priority !== 'number' ||
+        Number.isNaN(
+          complaint.priority
+        )
+      ) {
+
+        complaint.priority =
+          calculatePriority(
+            complaint.severity
+          )
+
+      }
+
+
+      // ==================================
+      // UPDATE STATUS
+      // ==================================
+
+      complaint.status =
+        status
+
+
+      // ==================================
+      // ENSURE HISTORY EXISTS
+      // ==================================
+
+      if (
+        !Array.isArray(
+          complaint.history
+        )
+      ) {
+
+        complaint.history = []
+
+      }
+
+
+      // ==================================
+      // ADD HISTORY ENTRY
+      // ==================================
+
+      complaint.history.push({
+
+        status:
+          status,
+
+        timestamp:
+          new Date(),
+
+        description:
+          `Complaint status changed to ${status}.`
+
+      })
+
+
+      // ==================================
+      // SAVE
+      // ==================================
+
+      await complaint.save()
+
+
+      console.log(
+
+        `Complaint ${complaint.id} status updated to ${status}`
+
+      )
+
+
+      res.json({
+
+        message:
+          'Complaint status updated successfully.',
+
+        complaint:
+          complaint
+
+      })
+
+
+    } catch (error) {
+
+      console.error(
+        'Status update error:',
+        error
+      )
+
+
+      res.status(500).json({
+
+        message:
+          'Failed to update complaint status.',
+
+        error:
+          error.message
+
+      })
+
+    }
+
+  }
+)
+
+
+// ======================================
+// GET COMPLAINT BY ID
+// ======================================
+
+app.get(
+  '/api/complaints/:id',
+  async (req, res) => {
+
+    try {
+
+      console.log(
+        'Searching complaint:',
+        req.params.id
+      )
+
+
+      // ==================================
+      // FIND COMPLAINT
+      // ==================================
+
+      const complaint =
+        await Complaint.findOne({
+
+          id:
+            req.params.id
+
+        })
+
+
+      if (!complaint) {
+
+        return res.status(404).json({
+
+          message:
+            'Complaint not found.'
+
+        })
+
+      }
+
+
+      // ==================================
+      // REPAIR OLD PRIORITY
+      // ==================================
+
+      if (
+        typeof complaint.priority !== 'number' ||
+        Number.isNaN(
+          complaint.priority
+        )
+      ) {
+
+        complaint.priority =
+          calculatePriority(
+            complaint.severity
+          )
+
+      }
+
+
+      // ==================================
+      // CREATE HISTORY FOR OLD RECORDS
+      // ==================================
+
+      if (
+        !Array.isArray(
+          complaint.history
+        ) ||
+        complaint.history.length === 0
+      ) {
+
+        const history = [
+
+          {
+
+            status:
+              'Pending',
+
+            timestamp:
+              complaint.createdAt ||
+              new Date(),
+
+            description:
+              'Complaint was submitted.'
+
+          }
+
+        ]
+
+
+        if (
+          complaint.status ===
+          'In Progress'
+        ) {
+
+          history.push({
+
+            status:
+              'In Progress',
+
+            timestamp:
+              new Date(),
+
+            description:
+              'Complaint is currently being processed.'
+
+          })
+
+        }
+
+
+        if (
+          complaint.status ===
+          'Resolved'
+        ) {
+
+          history.push({
+
+            status:
+              'In Progress',
+
+            timestamp:
+              new Date(),
+
+            description:
+              'Complaint was processed by the authority.'
+
+          })
+
+
+          history.push({
+
+            status:
+              'Resolved',
+
+            timestamp:
+              new Date(),
+
+            description:
+              'Complaint was marked as resolved.'
+
+          })
+
+        }
+
+
+        complaint.history =
+          history
+
+      }
+
+
+      // ==================================
+      // SAVE REPAIRED RECORD
+      // ==================================
+
+      await complaint.save()
+
+
+      // ==================================
+      // RESPONSE
+      // ==================================
+
+      res.json(
+        complaint
+      )
+
+
+    } catch (error) {
+
+      console.error(
+        'GET COMPLAINT ERROR:',
+        error
+      )
+
+
+      res.status(500).json({
+
+        message:
+          'Failed to fetch complaint.',
+
+        error:
+          error.message
+
+      })
+
+    }
+
+  }
+)
+
+
+// ======================================
+// CONNECT MONGODB + START SERVER
+// ======================================
 
 mongoose
-  .connect(process.env.MONGODB_URI)
+  .connect(
+    process.env.MONGODB_URI
+  )
+
   .then(() => {
 
     console.log(
       'MongoDB connected successfully!'
     )
 
-    app.listen(PORT, () => {
 
-      console.log(
-        `CivicPulse backend running on http://localhost:${PORT}`
-      )
+    app.listen(
+      PORT,
+      () => {
 
-    })
+        console.log(
+          `CivicPulse backend running on http://localhost:${PORT}`
+        )
 
-  })
-  .catch((error) => {
-
-    console.error(
-      'MongoDB connection failed:',
-      error.message
+      }
     )
 
   })
+
+  .catch(
+    (error) => {
+
+      console.error(
+        'MongoDB connection failed:',
+        error.message
+
+      )
+
+    }
+  )
