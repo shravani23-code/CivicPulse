@@ -1713,17 +1713,11 @@ mongoose
     )
 
 
-    app.listen(
-      PORT,
-      () => {
+    const PORT = process.env.PORT || 5000;
 
-        console.log(
-          `CivicPulse backend running on http://localhost:${PORT}`
-        )
-
-      }
-    )
-
+app.listen(PORT, () => {
+    console.log(`CivicPulse backend running on port ${PORT}`);
+});
   })
 
   .catch(
