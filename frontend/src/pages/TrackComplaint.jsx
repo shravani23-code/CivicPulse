@@ -59,7 +59,7 @@ function TrackComplaint() {
 
       const complaintResponse =
         await fetch(
-          `http://localhost:5000/api/complaints/${id}`
+          `http://https://civicpulse-backend-nt8q.onrender.com/api/complaints/${id}`
         )
 
 
@@ -88,7 +88,7 @@ function TrackComplaint() {
 
       const historyResponse =
         await fetch(
-          `http://localhost:5000/api/complaints/${id}/history`
+          `http://https://civicpulse-backend-nt8q.onrender.com/api/complaints/${id}/history`
         )
 
 

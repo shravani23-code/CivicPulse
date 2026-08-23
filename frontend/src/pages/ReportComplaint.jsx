@@ -185,7 +185,7 @@ function ReportComplaint() {
     try {
 
       const response = await fetch(
-        'http://localhost:5000/api/complaints',
+        'https://civicpulse-backend-nt8q.onrender.com/api/complaints',
         {
           method: 'POST',
 

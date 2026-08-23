@@ -80,7 +80,7 @@ function AdminDashboard() {
 
       const response =
         await fetch(
-          'http://localhost:5000/api/complaints/priority'
+          'http://https://civicpulse-backend-nt8q.onrender.com/api/complaints/priority'
         )
 
 
@@ -154,7 +154,7 @@ function AdminDashboard() {
 
       const response =
         await fetch(
-          `http://localhost:5000/api/complaints/${complaintId}/status`,
+          `http://https://civicpulse-backend-nt8q.onrender.com/api/complaints/${complaintId}/status`,
           {
 
             method:
