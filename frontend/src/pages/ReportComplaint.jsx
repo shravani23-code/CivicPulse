@@ -1,5 +1,37 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
+import {
+  Construction,
+  Trash2,
+  Droplet,
+  Lightbulb,
+  Waves,
+  TrafficCone,
+  MoreHorizontal,
+  UploadCloud,
+  X,
+  CheckCircle2
+} from 'lucide-react'
 import '../App.css'
+
+const CATEGORIES = [
+  { value: 'Road', label: 'Road / Pothole', icon: Construction },
+  { value: 'Garbage', label: 'Garbage / Waste', icon: Trash2 },
+  { value: 'Water', label: 'Water Supply', icon: Droplet },
+  { value: 'Streetlight', label: 'Streetlight', icon: Lightbulb },
+  { value: 'Drainage', label: 'Drainage', icon: Waves },
+  { value: 'Traffic', label: 'Traffic', icon: TrafficCone },
+  { value: 'Other', label: 'Other', icon: MoreHorizontal }
+]
+
+const SEVERITIES = [
+  { value: 'Low', label: 'Low', hint: 'Minor issue, no urgency', color: '#3f7d58' },
+  { value: 'Medium', label: 'Medium', hint: 'Should be looked at soon', color: '#c99a2e' },
+  { value: 'High', label: 'High', hint: 'Needs prompt attention', color: '#cf7a39' },
+  { value: 'Critical', label: 'Critical', hint: 'Urgent, safety risk', color: '#c1503f' }
+]
+
+const STEP_LABELS = ['Details', 'Location & Severity', 'Photo', 'Review']
 
 function ReportComplaint() {
 
@@ -12,11 +44,19 @@ function ReportComplaint() {
     image: null
   })
 
+  const [step, setStep] = useState(1)
+  const [stepError, setStepError] = useState('')
+  const [imagePreview, setImagePreview] = useState(null)
+  const [isDragging, setIsDragging] = useState(false)
+
   const [submittedComplaint, setSubmittedComplaint] = useState(null)
 
   const [error, setError] = useState('')
 
   const [isSubmitting, setIsSubmitting] = useState(false)
+
+  const fileInputRef = useRef(null)
+  const imagePreviewRef = useRef(null)
 
 
   // Handle text, select and textarea changes
@@ -31,13 +71,106 @@ function ReportComplaint() {
   }
 
 
+  function setCategory(value) {
+    setFormData(prev => ({ ...prev, category: value }))
+  }
+
+  function setSeverity(value) {
+    setFormData(prev => ({ ...prev, severity: value }))
+  }
+
+
+  // Set (or clear) the selected image and its preview URL together,
+  // revoking the previous object URL to avoid leaking memory.
+  function setImageFile(file) {
+
+    if (imagePreviewRef.current) {
+      URL.revokeObjectURL(imagePreviewRef.current)
+    }
+
+    const url = file ? URL.createObjectURL(file) : null
+    imagePreviewRef.current = url
+
+    setFormData(prev => ({ ...prev, image: file }))
+    setImagePreview(url)
+  }
+
+
   // Handle image selection
   function handleImageChange(event) {
+    setImageFile(event.target.files[0] || null)
+  }
 
-    setFormData({
-      ...formData,
-      image: event.target.files[0]
-    })
+  function handleDrop(event) {
+    event.preventDefault()
+    setIsDragging(false)
+
+    const file = event.dataTransfer.files && event.dataTransfer.files[0]
+
+    if (file && file.type.startsWith('image/')) {
+      setImageFile(file)
+    }
+  }
+
+  function handleDragOver(event) {
+    event.preventDefault()
+    setIsDragging(true)
+  }
+
+  function handleDragLeave() {
+    setIsDragging(false)
+  }
+
+  function removeImage() {
+    setImageFile(null)
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
+    }
+  }
+
+
+  // Revoke the last object URL on unmount
+  useEffect(() => {
+    return () => {
+      if (imagePreviewRef.current) {
+        URL.revokeObjectURL(imagePreviewRef.current)
+      }
+    }
+  }, [])
+
+
+  function validateStep(currentStep) {
+
+    if (currentStep === 1) {
+      if (!formData.title.trim()) return 'Please enter a complaint title.'
+      if (!formData.category) return 'Please select a category.'
+    }
+
+    if (currentStep === 2) {
+      if (!formData.location.trim()) return 'Please enter the location.'
+      if (!formData.severity) return 'Please select a severity level.'
+      if (!formData.description.trim()) return 'Please describe the problem.'
+    }
+
+    return ''
+  }
+
+  function goNext() {
+
+    const validationError = validateStep(step)
+
+    if (validationError) {
+      setStepError(validationError)
+      return
+    }
+
+    setStepError('')
+    setStep(current => Math.min(current + 1, 4))
+  }
+
+  function goBack() {
+    setStepError('')
+    setStep(current => Math.max(current - 1, 1))
   }
 
 
@@ -119,6 +252,10 @@ function ReportComplaint() {
   }
 
 
+  const selectedCategory = CATEGORIES.find(c => c.value === formData.category)
+  const selectedSeverity = SEVERITIES.find(s => s.value === formData.severity)
+
+
   return (
     <div className="complaint-page">
 
@@ -157,182 +294,329 @@ function ReportComplaint() {
           onSubmit={handleSubmit}
         >
 
-          {/* Complaint Title */}
+          {/* Step progress indicator */}
 
-          <div className="form-group">
+          <div className="wizard-progress">
 
-            <label>
-              Complaint Title
-            </label>
+            {STEP_LABELS.map((label, index) => {
+              const stepNumber = index + 1
+              const isActive = stepNumber === step
+              const isDone = stepNumber < step
 
-            <input
-              type="text"
-              name="title"
-              placeholder="Example: Large pothole on main road"
-              value={formData.title}
-              onChange={handleChange}
-              required
-            />
+              return (
+                <div className="wizard-step-indicator" key={label}>
+
+                  <div
+                    className={`wizard-dot${isActive ? ' active' : ''}${isDone ? ' done' : ''}`}
+                  >
+                    {isDone ? <CheckCircle2 size={14} /> : stepNumber}
+                  </div>
+
+                  <span className={isActive ? 'active' : ''}>
+                    {label}
+                  </span>
+
+                  {index < STEP_LABELS.length - 1 && (
+                    <div className="wizard-track">
+                      <motion.div
+                        className="wizard-track-fill"
+                        animate={{ width: isDone ? '100%' : '0%' }}
+                        transition={{ duration: 0.35, ease: 'easeOut' }}
+                      />
+                    </div>
+                  )}
+
+                </div>
+              )
+            })}
 
           </div>
 
 
-          {/* Category + Severity */}
+          <AnimatePresence mode="wait">
 
-          <div className="form-row">
+            {step === 1 && (
 
-            <div className="form-group">
-
-              <label>
-                Category
-              </label>
-
-              <select
-                name="category"
-                value={formData.category}
-                onChange={handleChange}
-                required
+              <motion.div
+                key="step1"
+                initial={{ opacity: 0, x: 16 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -16 }}
+                transition={{ duration: 0.25 }}
               >
 
-                <option value="">
-                  Select category
-                </option>
+                <div className="form-group">
 
-                <option value="Road">
-                  Road / Pothole
-                </option>
+                  <label>
+                    Complaint Title
+                  </label>
 
-                <option value="Garbage">
-                  Garbage / Waste
-                </option>
+                  <input
+                    type="text"
+                    name="title"
+                    placeholder="Example: Large pothole on main road"
+                    value={formData.title}
+                    onChange={handleChange}
+                  />
 
-                <option value="Water">
-                  Water Supply
-                </option>
-
-                <option value="Streetlight">
-                  Streetlight
-                </option>
-
-                <option value="Drainage">
-                  Drainage
-                </option>
-
-                <option value="Traffic">
-                  Traffic
-                </option>
-
-                <option value="Other">
-                  Other
-                </option>
-
-              </select>
-
-            </div>
+                </div>
 
 
-            <div className="form-group">
+                <div className="form-group">
 
-              <label>
-                Severity
-              </label>
+                  <label>
+                    Category
+                  </label>
 
-              <select
-                name="severity"
-                value={formData.severity}
-                onChange={handleChange}
-                required
+                  <div className="category-grid">
+
+                    {CATEGORIES.map(cat => {
+                      const Icon = cat.icon
+                      const active = formData.category === cat.value
+
+                      return (
+                        <button
+                          type="button"
+                          key={cat.value}
+                          className={`category-chip${active ? ' active' : ''}`}
+                          onClick={() => setCategory(cat.value)}
+                        >
+                          <Icon size={20} />
+                          <span>{cat.label}</span>
+                        </button>
+                      )
+                    })}
+
+                  </div>
+
+                </div>
+
+              </motion.div>
+
+            )}
+
+
+            {step === 2 && (
+
+              <motion.div
+                key="step2"
+                initial={{ opacity: 0, x: 16 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -16 }}
+                transition={{ duration: 0.25 }}
               >
 
-                <option value="">
-                  Select severity
-                </option>
+                <div className="form-group">
 
-                <option value="Low">
-                  Low
-                </option>
+                  <label>
+                    Location
+                  </label>
 
-                <option value="Medium">
-                  Medium
-                </option>
+                  <input
+                    type="text"
+                    name="location"
+                    placeholder="Example: Near PCCOE, Nigdi"
+                    value={formData.location}
+                    onChange={handleChange}
+                  />
 
-                <option value="High">
-                  High
-                </option>
+                </div>
 
-                <option value="Critical">
-                  Critical
-                </option>
 
-              </select>
+                <div className="form-group">
 
+                  <label>
+                    Severity
+                  </label>
+
+                  <div className="severity-grid">
+
+                    {SEVERITIES.map(sev => {
+                      const active = formData.severity === sev.value
+
+                      return (
+                        <button
+                          type="button"
+                          key={sev.value}
+                          className={`severity-card${active ? ' active' : ''}`}
+                          style={{ '--severity-color': sev.color }}
+                          onClick={() => setSeverity(sev.value)}
+                        >
+                          <strong>{sev.label}</strong>
+                          <span>{sev.hint}</span>
+                        </button>
+                      )
+                    })}
+
+                  </div>
+
+                </div>
+
+
+                <div className="form-group">
+
+                  <label>
+                    Description
+                  </label>
+
+                  <textarea
+                    name="description"
+                    placeholder="Describe the problem in detail..."
+                    value={formData.description}
+                    onChange={handleChange}
+                    rows="5"
+                  ></textarea>
+
+                </div>
+
+              </motion.div>
+
+            )}
+
+
+            {step === 3 && (
+
+              <motion.div
+                key="step3"
+                initial={{ opacity: 0, x: 16 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -16 }}
+                transition={{ duration: 0.25 }}
+              >
+
+                <div className="form-group">
+
+                  <label>
+                    Upload Photo
+                  </label>
+
+                  {!imagePreview ? (
+
+                    <div
+                      className={`dropzone${isDragging ? ' dragging' : ''}`}
+                      onDragOver={handleDragOver}
+                      onDragLeave={handleDragLeave}
+                      onDrop={handleDrop}
+                      onClick={() => fileInputRef.current?.click()}
+                    >
+
+                      <UploadCloud size={28} />
+
+                      <p>
+                        Drag and drop a photo here, or click to browse
+                      </p>
+
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="image/*"
+                        onChange={handleImageChange}
+                        style={{ display: 'none' }}
+                      />
+
+                    </div>
+
+                  ) : (
+
+                    <div className="image-preview">
+
+                      <img src={imagePreview} alt="Complaint preview" />
+
+                      <button
+                        type="button"
+                        className="image-remove"
+                        onClick={removeImage}
+                        aria-label="Remove photo"
+                      >
+                        <X size={16} />
+                      </button>
+
+                    </div>
+
+                  )}
+
+                  <small>
+                    Upload an image showing the civic problem. This step is optional.
+                  </small>
+
+                </div>
+
+              </motion.div>
+
+            )}
+
+
+            {step === 4 && (
+
+              <motion.div
+                key="step4"
+                initial={{ opacity: 0, x: 16 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -16 }}
+                transition={{ duration: 0.25 }}
+              >
+
+                <div className="review-summary">
+
+                  <div className="detail-item">
+                    <span>Title</span>
+                    <strong>{formData.title}</strong>
+                  </div>
+
+                  <div className="detail-item">
+                    <span>Category</span>
+                    <strong>{selectedCategory ? selectedCategory.label : '—'}</strong>
+                  </div>
+
+                  <div className="detail-item">
+                    <span>Severity</span>
+                    <strong>{selectedSeverity ? selectedSeverity.label : '—'}</strong>
+                  </div>
+
+                  <div className="detail-item">
+                    <span>Location</span>
+                    <strong>{formData.location}</strong>
+                  </div>
+
+                  <div className="detail-item">
+                    <span>Photo</span>
+                    <strong>{formData.image ? formData.image.name : 'No image uploaded'}</strong>
+                  </div>
+
+                </div>
+
+                <div className="submitted-description">
+                  <span>Description</span>
+                  <p>{formData.description}</p>
+                </div>
+
+              </motion.div>
+
+            )}
+
+          </AnimatePresence>
+
+
+          {/* Step error */}
+
+          {stepError && (
+
+            <div
+              style={{
+                marginTop: '15px',
+                padding: '12px',
+                background: '#fff0f0',
+                color: '#a33a3a',
+                borderRadius: '8px'
+              }}
+            >
+              {stepError}
             </div>
 
-          </div>
+          )}
 
 
-          {/* Description */}
-
-          <div className="form-group">
-
-            <label>
-              Description
-            </label>
-
-            <textarea
-              name="description"
-              placeholder="Describe the problem in detail..."
-              value={formData.description}
-              onChange={handleChange}
-              rows="6"
-              required
-            ></textarea>
-
-          </div>
-
-
-          {/* Location */}
-
-          <div className="form-group">
-
-            <label>
-              Location
-            </label>
-
-            <input
-              type="text"
-              name="location"
-              placeholder="Example: Near PCCOE, Nigdi"
-              value={formData.location}
-              onChange={handleChange}
-              required
-            />
-
-          </div>
-
-
-          {/* Image */}
-
-          <div className="form-group">
-
-            <label>
-              Upload Photo
-            </label>
-
-            <input
-              type="file"
-              accept="image/*"
-              onChange={handleImageChange}
-            />
-
-            <small>
-              Upload an image showing the civic problem.
-            </small>
-
-          </div>
-
-
-          {/* Error */}
+          {/* Submit error */}
 
           {error && (
 
@@ -351,19 +635,43 @@ function ReportComplaint() {
           )}
 
 
-          {/* Submit */}
+          {/* Step navigation */}
 
-          <button
-            type="submit"
-            className="submit-button"
-            disabled={isSubmitting}
-          >
+          <div className="wizard-actions">
 
-            {isSubmitting
-              ? 'Submitting...'
-              : 'Submit Complaint'}
+            {step > 1 && (
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={goBack}
+              >
+                Back
+              </button>
+            )}
 
-          </button>
+            {step < 4 && (
+              <button
+                type="button"
+                className="submit-button"
+                onClick={goNext}
+              >
+                Continue
+              </button>
+            )}
+
+            {step === 4 && (
+              <button
+                type="submit"
+                className="submit-button"
+                disabled={isSubmitting}
+              >
+                {isSubmitting
+                  ? 'Submitting...'
+                  : 'Submit Complaint'}
+              </button>
+            )}
+
+          </div>
 
         </form>
 
@@ -371,11 +679,21 @@ function ReportComplaint() {
 
         /* Success Card */
 
-        <div className="success-card">
+        <motion.div
+          className="success-card"
+          initial={{ opacity: 0, scale: 0.94 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ duration: 0.4, ease: 'easeOut' }}
+        >
 
-          <div className="success-icon">
-            ✓
-          </div>
+          <motion.div
+            className="success-icon"
+            initial={{ scale: 0 }}
+            animate={{ scale: 1 }}
+            transition={{ duration: 0.4, delay: 0.15, type: 'spring', stiffness: 200 }}
+          >
+            <CheckCircle2 size={30} />
+          </motion.div>
 
           <h2>
             Complaint Submitted Successfully
@@ -481,7 +799,7 @@ function ReportComplaint() {
             Back to Home
           </a>
 
-        </div>
+        </motion.div>
 
       )}
 

@@ -1,7 +1,10 @@
 {
   "dependencies": {
     "dotenv": "^17.4.2",
+    "framer-motion": "^13.1.1",
     "mongoose": "^9.9.3",
+    "react-countup": "^6.5.3",
+    "react-hot-toast": "^2.6.0",
     "react-router-dom": "^7.18.2"
   }
 }

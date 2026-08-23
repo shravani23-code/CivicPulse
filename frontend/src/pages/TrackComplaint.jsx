@@ -1,5 +1,23 @@
 import { useState } from 'react'
+import { motion } from 'framer-motion'
+import { Link2 } from 'lucide-react'
 import '../App.css'
+
+const containerVariants = {
+  hidden: {},
+  visible: {
+    transition: { staggerChildren: 0.12 }
+  }
+}
+
+const itemVariants = {
+  hidden: { opacity: 0, y: 18 },
+  visible: {
+    opacity: 1,
+    y: 0,
+    transition: { duration: 0.4, ease: 'easeOut' }
+  }
+}
 
 function TrackComplaint() {
 
@@ -130,27 +148,12 @@ function TrackComplaint() {
   // STATUS HELPERS
   // ======================================
 
-  function getStatusClass(status) {
+  function statusToClass(status) {
 
-    if (
-      status === 'Resolved'
-    ) {
+    if (status === 'Resolved') return 'resolved'
+    if (status === 'In Progress') return 'in-progress'
 
-      return 'timeline-step completed'
-
-    }
-
-
-    if (
-      status === 'In Progress'
-    ) {
-
-      return 'timeline-step active'
-
-    }
-
-
-    return 'timeline-step active'
+    return 'pending'
 
   }
 
@@ -292,11 +295,16 @@ function TrackComplaint() {
 
         {complaint && (
 
-          <div className="complaint-result">
+          <motion.div
+            className="complaint-result"
+            variants={containerVariants}
+            initial="hidden"
+            animate="visible"
+          >
 
             {/* Result Header */}
 
-            <div className="result-header">
+            <motion.div className="result-header" variants={itemVariants}>
 
               <div>
 
@@ -312,18 +320,18 @@ function TrackComplaint() {
               </div>
 
 
-              <span className="status-badge">
+              <span className={`status-badge ${statusToClass(complaint.status)}`}>
                 {complaint.status}
               </span>
 
-            </div>
+            </motion.div>
 
 
             {/* ==================================
                 COMPLAINT DETAILS
             ================================== */}
 
-            <div className="result-grid">
+            <motion.div className="result-grid" variants={itemVariants}>
 
               <div className="result-item">
 
@@ -408,14 +416,14 @@ function TrackComplaint() {
 
               </div>
 
-            </div>
+            </motion.div>
 
 
             {/* ==================================
                 DESCRIPTION
             ================================== */}
 
-            <div className="submitted-description">
+            <motion.div className="submitted-description" variants={itemVariants}>
 
               <span>
                 Description
@@ -425,21 +433,22 @@ function TrackComplaint() {
                 {complaint.description}
               </p>
 
-            </div>
+            </motion.div>
 
 
             {/* ==================================
                 LINKED LIST HISTORY
             ================================== */}
 
-            <div className="status-section">
+            <motion.div className="status-section" variants={itemVariants}>
 
               <div className="history-heading">
 
                 <div>
 
                   <p className="result-label">
-                    C++ LINKED LIST
+                    <Link2 size={12} style={{ verticalAlign: '-1px', marginRight: '5px' }} />
+                    COMPLAINT HISTORY
                   </p>
 
                   <h3>
@@ -449,7 +458,7 @@ function TrackComplaint() {
                 </div>
 
 
-                <span>
+                <span className="history-count">
                   {history.length}{' '}
                   {history.length === 1
                     ? 'update'
@@ -461,72 +470,85 @@ function TrackComplaint() {
 
               {history.length === 0 ? (
 
-                <div className="empty-state">
+                <div className="history-empty">
                   No history available.
                 </div>
 
               ) : (
 
-                <div className="timeline">
+                <div className="history-timeline">
 
                   {history.map(
-                    (item, index) => (
+                    (item, index) => {
 
-                      <div
-                        className={getStatusClass(
-                          item.status
-                        )}
-                        key={
-                          `${item.status}-${index}`
-                        }
-                      >
+                      const isCurrent = index === history.length - 1
 
-                        <div className="timeline-dot">
+                      return (
 
-                          {getStatusIcon(
-                            item.status,
-                            index
+                        <motion.div
+                          className="history-item"
+                          key={`${item.status}-${index}`}
+                          initial={{ opacity: 0, x: -12 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          transition={{ duration: 0.35, delay: index * 0.1 }}
+                        >
+
+                          {index < history.length - 1 && (
+                            <div className="history-line"></div>
                           )}
 
-                        </div>
+                          <div
+                            className={`history-node ${statusToClass(item.status)}${isCurrent ? ' current' : ''}`}
+                          >
+
+                            {getStatusIcon(
+                              item.status,
+                              index
+                            )}
+
+                          </div>
 
 
-                        <div>
+                          <div className="history-content">
 
-                          <strong>
-                            {item.status}
-                          </strong>
+                            <div className="history-top">
+
+                              <strong>
+                                {item.status}
+                              </strong>
+
+                              <span>
+
+                                {item.timestamp
+                                  ? new Date(
+                                      item.timestamp
+                                    ).toLocaleString()
+                                  : ''}
+
+                              </span>
+
+                            </div>
 
 
-                          <p>
-                            {item.description}
-                          </p>
+                            <p>
+                              {item.description}
+                            </p>
 
+                          </div>
 
-                          <small>
+                        </motion.div>
 
-                            {item.timestamp
-                              ? new Date(
-                                  item.timestamp
-                                ).toLocaleString()
-                              : ''}
-
-                          </small>
-
-                        </div>
-
-                      </div>
-
-                    )
+                      )
+                    }
                   )}
 
                 </div>
 
               )}
 
-            </div>
+            </motion.div>
 
-          </div>
+          </motion.div>
 
         )}
 
