@@ -87,10 +87,6 @@ const complaintSchema = new mongoose.Schema({
     default: 10
   },
 
-  // ======================================
-  // COMPLAINT HISTORY
-  // ======================================
-
   history: [
 
     {
@@ -142,7 +138,77 @@ app.get('/', (req, res) => {
 
 })
 
+// ======================================
+// CITY STATISTICS
+// ======================================
 
+app.get(
+  '/api/complaints/stats',
+  async (req, res) => {
+
+    try {
+
+      const total =
+        await Complaint.countDocuments()
+
+
+      const pending =
+        await Complaint.countDocuments({
+          status: 'Pending'
+        })
+
+
+      const inProgress =
+        await Complaint.countDocuments({
+          status: 'In Progress'
+        })
+
+
+      const resolved =
+        await Complaint.countDocuments({
+          status: 'Resolved'
+        })
+
+
+      const critical =
+        await Complaint.countDocuments({
+          severity: 'Critical'
+        })
+
+
+      res.json({
+
+        total,
+        pending,
+        inProgress,
+        resolved,
+        critical
+
+      })
+
+
+    } catch (error) {
+
+      console.error(
+        'Statistics error:',
+        error
+      )
+
+
+      res.status(500).json({
+
+        message:
+          'Failed to fetch complaint statistics.',
+
+        error:
+          error.message
+
+      })
+
+    }
+
+  }
+)
 // ======================================
 // GET ALL COMPLAINTS
 // ======================================
@@ -229,7 +295,6 @@ app.get(
               complaint.severity
             )
 
-
           await complaint.save()
 
         }
@@ -238,7 +303,7 @@ app.get(
 
 
       // ==================================
-      // C++ ENGINE PATH
+      // C++ MAX HEAP ENGINE
       // ==================================
 
       const cppPath =
@@ -303,7 +368,7 @@ app.get(
 
 
       // ==================================
-      // C++ OUTPUT
+      // RECEIVE C++ OUTPUT
       // ==================================
 
       cppProcess.stdout.on(
@@ -421,7 +486,12 @@ app.get(
                   status:
                     originalComplaint
                       ? originalComplaint.status
-                      : 'Pending'
+                      : 'Pending',
+
+                  createdAt:
+                    originalComplaint
+                      ? originalComplaint.createdAt
+                      : null
 
                 }
 
@@ -620,10 +690,6 @@ app.get(
       }
 
 
-      // ==================================
-      // SAVE REPAIRED COMPLAINT
-      // ==================================
-
       await complaint.save()
 
 
@@ -724,7 +790,7 @@ app.get(
 
 
       // ==================================
-      // C++ PROCESS FINISHED
+      // C++ FINISHED
       // ==================================
 
       cppProcess.on(
@@ -751,10 +817,6 @@ app.get(
 
           }
 
-
-          // ==================================
-          // CONVERT OUTPUT TO JSON
-          // ==================================
 
           const lines =
             output
@@ -832,6 +894,275 @@ app.get(
 
 
 // ======================================
+// COMPLAINT PROCESSING QUEUE
+// C++ FIFO QUEUE
+// ======================================
+
+app.get(
+  '/api/complaints/queue',
+  async (req, res) => {
+
+    try {
+
+      console.log(
+        'Queue API called'
+      )
+
+
+      // ==================================
+      // GET UNRESOLVED COMPLAINTS
+      // OLDEST FIRST
+      // ==================================
+
+      const complaints =
+        await Complaint.find({
+
+          status: {
+            $ne: 'Resolved'
+          }
+
+        }).sort({
+
+          createdAt: 1
+
+        })
+
+
+      // ==================================
+      // C++ QUEUE ENGINE
+      // ==================================
+
+      const cppPath =
+        path.join(
+          __dirname,
+          '..',
+          'dsa',
+          'queue_engine.exe'
+        )
+
+
+      console.log(
+        'Starting C++ Queue Engine:',
+        cppPath
+      )
+
+
+      const cppProcess =
+        spawn(cppPath)
+
+
+      let output = ''
+      let errorOutput = ''
+
+
+      cppProcess.on(
+        'error',
+        (error) => {
+
+          console.error(
+            'Could not start Queue Engine:',
+            error
+          )
+
+        }
+      )
+
+
+      // ==================================
+      // SEND COMPLAINTS TO C++
+      // ==================================
+
+      for (
+        const complaint of complaints
+      ) {
+
+        const line =
+          `${complaint.id}|` +
+          `${complaint.title}|` +
+          `${complaint.category}|` +
+          `${complaint.severity}\n`
+
+
+        cppProcess.stdin.write(
+          line
+        )
+
+      }
+
+
+      cppProcess.stdin.end()
+
+
+      // ==================================
+      // RECEIVE C++ OUTPUT
+      // ==================================
+
+      cppProcess.stdout.on(
+        'data',
+        (data) => {
+
+          output +=
+            data.toString()
+
+        }
+      )
+
+
+      cppProcess.stderr.on(
+        'data',
+        (data) => {
+
+          errorOutput +=
+            data.toString()
+
+        }
+      )
+
+
+      // ==================================
+      // C++ FINISHED
+      // ==================================
+
+      cppProcess.on(
+        'close',
+        (code) => {
+
+          console.log(
+            'Queue engine finished:',
+            code
+          )
+
+
+          if (code !== 0) {
+
+            console.error(
+              'Queue Engine error:',
+              errorOutput
+            )
+
+
+            return res.status(500).json({
+
+              message:
+                'C++ Queue Engine failed.',
+
+              error:
+                errorOutput
+
+            })
+
+          }
+
+
+          const lines =
+            output
+              .trim()
+              .split('\n')
+              .filter(
+                line =>
+                  line.trim().length > 0
+              )
+
+
+          const queueComplaints =
+            lines.map(
+              (line, index) => {
+
+                const [
+
+                  id,
+                  title,
+                  category,
+                  severity
+
+                ] =
+                  line.split('|')
+
+
+                const originalComplaint =
+                  complaints.find(
+                    complaint =>
+                      complaint.id === id
+                  )
+
+
+                return {
+
+                  position:
+                    index + 1,
+
+                  id:
+                    id || '',
+
+                  title:
+                    title || '',
+
+                  category:
+                    category || '',
+
+                  severity:
+                    severity || '',
+
+                  priority:
+                    originalComplaint
+                      ? originalComplaint.priority
+                      : 0,
+
+                  status:
+                    originalComplaint
+                      ? originalComplaint.status
+                      : 'Pending',
+
+                  createdAt:
+                    originalComplaint
+                      ? originalComplaint.createdAt
+                      : null
+
+                }
+
+              }
+            )
+
+
+          res.json({
+
+            message:
+              'Complaints processed using C++ FIFO Queue',
+
+            queue:
+              queueComplaints
+
+          })
+
+        }
+      )
+
+
+    } catch (error) {
+
+      console.error(
+        'Queue integration error:',
+        error
+      )
+
+
+      res.status(500).json({
+
+        message:
+          'Failed to process complaint queue.',
+
+        error:
+          error.message
+
+      })
+
+    }
+
+  }
+)
+
+
+// ======================================
 // SUBMIT COMPLAINT
 // ======================================
 
@@ -876,7 +1207,7 @@ app.post(
 
 
       // ==================================
-      // GENERATE ID
+      // GENERATE COMPLAINT ID
       // ==================================
 
       const complaintId =
@@ -1108,7 +1439,7 @@ app.put(
 
 
       // ==================================
-      // ADD HISTORY ENTRY
+      // ADD HISTORY
       // ==================================
 
       complaint.history.push({
@@ -1401,7 +1732,6 @@ mongoose
       console.error(
         'MongoDB connection failed:',
         error.message
-
       )
 
     }

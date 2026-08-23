@@ -5,13 +5,10 @@ function TrackComplaint() {
 
   const [complaintId, setComplaintId] = useState('')
   const [complaint, setComplaint] = useState(null)
+  const [history, setHistory] = useState([])
   const [error, setError] = useState('')
   const [isSearching, setIsSearching] = useState(false)
 
-
-  // ======================================
-  // SEARCH COMPLAINT
-  // ======================================
 
   async function handleSearch(event) {
 
@@ -19,9 +16,9 @@ function TrackComplaint() {
 
     setError('')
     setComplaint(null)
+    setHistory([])
 
-    const id =
-      complaintId.trim()
+    const id = complaintId.trim()
 
     if (!id) {
 
@@ -32,50 +29,93 @@ function TrackComplaint() {
       return
     }
 
+
     setIsSearching(true)
+
 
     try {
 
-      const response =
+      // ==================================
+      // GET COMPLAINT
+      // ==================================
+
+      const complaintResponse =
         await fetch(
           `http://localhost:5000/api/complaints/${id}`
         )
 
 
-      const data =
-        await response.json()
+      const complaintData =
+        await complaintResponse.json()
 
 
-      if (!response.ok) {
+      if (!complaintResponse.ok) {
 
-        setError(
-          data.message ||
+        throw new Error(
+          complaintData.message ||
           'Complaint not found.'
         )
 
-        return
+      }
+
+
+      setComplaint(
+        complaintData
+      )
+
+
+      // ==================================
+      // GET HISTORY FROM C++ LINKED LIST
+      // ==================================
+
+      const historyResponse =
+        await fetch(
+          `http://localhost:5000/api/complaints/${id}/history`
+        )
+
+
+      const historyData =
+        await historyResponse.json()
+
+
+      if (!historyResponse.ok) {
+
+        throw new Error(
+          historyData.message ||
+          'Failed to fetch complaint history.'
+        )
+
       }
 
 
       console.log(
-        'Complaint received from backend:',
-        data
+        'History received from C++ Linked List:',
+        historyData
       )
 
 
-      setComplaint(data)
+      setHistory(
+        historyData.history || []
+      )
+
 
     } catch (error) {
 
       console.error(
-        'Backend connection error:',
+        'Tracking error:',
         error
       )
 
 
       setError(
-        'Unable to connect to CivicPulse server. Make sure the backend is running.'
+        error.message ||
+        'Unable to connect to CivicPulse server.'
       )
+
+
+      setComplaint(null)
+      setHistory([])
+
 
     } finally {
 
@@ -92,50 +132,69 @@ function TrackComplaint() {
 
   function getStatusClass(status) {
 
-    if (status === 'Resolved') {
-      return 'resolved'
-    }
+    if (
+      status === 'Resolved'
+    ) {
 
-    if (status === 'In Progress') {
-      return 'in-progress'
-    }
+      return 'timeline-step completed'
 
-    return 'pending'
-  }
-
-
-  // ======================================
-  // FORMAT DATE
-  // ======================================
-
-  function formatDate(date) {
-
-    if (!date) {
-      return 'Not available'
     }
 
 
-    return new Date(
-      date
-    ).toLocaleString(
-      [],
-      {
-        dateStyle: 'medium',
-        timeStyle: 'short'
-      }
-    )
+    if (
+      status === 'In Progress'
+    ) {
+
+      return 'timeline-step active'
+
+    }
+
+
+    return 'timeline-step active'
 
   }
 
 
-  // ======================================
-  // RENDER
-  // ======================================
+  function getStatusIcon(
+    status,
+    index
+  ) {
+
+    if (
+      status === 'Resolved'
+    ) {
+
+      return '✓'
+
+    }
+
+
+    if (
+      status === 'In Progress'
+    ) {
+
+      return '→'
+
+    }
+
+
+    if (
+      index === 0
+    ) {
+
+      return '✓'
+
+    }
+
+
+    return index + 1
+
+  }
+
 
   return (
 
     <div className="track-page">
-
 
       {/* ==================================
           HEADER
@@ -186,35 +245,21 @@ function TrackComplaint() {
           <div className="track-input-row">
 
             <input
-
               type="text"
-
               placeholder="Example: CP12345678"
-
-              value={
-                complaintId
+              value={complaintId}
+              onChange={(event) =>
+                setComplaintId(
+                  event.target.value
+                )
               }
-
-              onChange={
-                (event) =>
-                  setComplaintId(
-                    event.target.value
-                  )
-              }
-
             />
 
 
             <button
-
               type="submit"
-
               className="submit-button"
-
-              disabled={
-                isSearching
-              }
-
+              disabled={isSearching}
             >
 
               {isSearching
@@ -249,10 +294,7 @@ function TrackComplaint() {
 
           <div className="complaint-result">
 
-
-            {/* ==================================
-                RESULT HEADER
-            ================================== */}
+            {/* Result Header */}
 
             <div className="result-header">
 
@@ -270,27 +312,18 @@ function TrackComplaint() {
               </div>
 
 
-              <span
-                className={
-                  `status-badge ${getStatusClass(
-                    complaint.status
-                  )}`
-                }
-              >
-
+              <span className="status-badge">
                 {complaint.status}
-
               </span>
 
             </div>
 
 
             {/* ==================================
-                COMPLAINT INFORMATION
+                COMPLAINT DETAILS
             ================================== */}
 
             <div className="result-grid">
-
 
               <div className="result-item">
 
@@ -338,8 +371,7 @@ function TrackComplaint() {
                 </span>
 
                 <strong>
-                  {complaint.priority ||
-                    'Not calculated'}
+                  {complaint.priority}
                 </strong>
 
               </div>
@@ -365,9 +397,13 @@ function TrackComplaint() {
                 </span>
 
                 <strong>
-                  {formatDate(
-                    complaint.createdAt
-                  )}
+
+                  {complaint.createdAt
+                    ? new Date(
+                        complaint.createdAt
+                      ).toLocaleDateString()
+                    : 'Not available'}
+
                 </strong>
 
               </div>
@@ -385,7 +421,6 @@ function TrackComplaint() {
                 Description
               </span>
 
-
               <p>
                 {complaint.description}
               </p>
@@ -394,129 +429,89 @@ function TrackComplaint() {
 
 
             {/* ==================================
-                COMPLAINT HISTORY
+                LINKED LIST HISTORY
             ================================== */}
 
             <div className="status-section">
-
 
               <div className="history-heading">
 
                 <div>
 
                   <p className="result-label">
-                    COMPLAINT HISTORY
+                    C++ LINKED LIST
                   </p>
 
                   <h3>
-                    Resolution Timeline
+                    Complaint History
                   </h3>
 
                 </div>
 
 
-                <span className="history-count">
-
-                  {complaint.history
-                    ? complaint.history.length
-                    : 0}
-
-                  {' '}
-                  updates
-
+                <span>
+                  {history.length}{' '}
+                  {history.length === 1
+                    ? 'update'
+                    : 'updates'}
                 </span>
 
               </div>
 
 
-              {/* ==================================
-                  NO HISTORY
-              ================================== */}
+              {history.length === 0 ? (
 
-              {!complaint.history ||
-              complaint.history.length === 0 ? (
-
-                <div className="history-empty">
-
-                  No status history is available
-                  for this complaint yet.
-
+                <div className="empty-state">
+                  No history available.
                 </div>
 
               ) : (
 
+                <div className="timeline">
 
-                /* ==================================
-                   TIMELINE
-                ================================== */
-
-                <div className="history-timeline">
-
-
-                  {complaint.history.map(
+                  {history.map(
                     (item, index) => (
 
                       <div
-                        className="history-item"
-                        key={`${item.timestamp}-${index}`}
+                        className={getStatusClass(
+                          item.status
+                        )}
+                        key={
+                          `${item.status}-${index}`
+                        }
                       >
 
+                        <div className="timeline-dot">
 
-                        {/* Timeline line */}
-
-                        {index <
-                          complaint.history.length - 1 && (
-
-                          <div className="history-line">
-                          </div>
-
-                        )}
-
-
-                        {/* Timeline node */}
-
-                        <div
-                          className={
-                            `history-node ${
-                              getStatusClass(
-                                item.status
-                              )
-                            }`
-                          }
-                        >
-
-                          ✓
+                          {getStatusIcon(
+                            item.status,
+                            index
+                          )}
 
                         </div>
 
 
-                        {/* Timeline content */}
+                        <div>
 
-                        <div className="history-content">
-
-
-                          <div className="history-top">
-
-                            <strong>
-                              {item.status}
-                            </strong>
-
-
-                            <span>
-                              {formatDate(
-                                item.timestamp
-                              )}
-                            </span>
-
-                          </div>
+                          <strong>
+                            {item.status}
+                          </strong>
 
 
                           <p>
-
-                            {item.description ||
-                              `Complaint status changed to ${item.status}.`}
-
+                            {item.description}
                           </p>
+
+
+                          <small>
+
+                            {item.timestamp
+                              ? new Date(
+                                  item.timestamp
+                                ).toLocaleString()
+                              : ''}
+
+                          </small>
 
                         </div>
 
@@ -531,7 +526,6 @@ function TrackComplaint() {
 
             </div>
 
-
           </div>
 
         )}
@@ -541,7 +535,7 @@ function TrackComplaint() {
     </div>
 
   )
-}
 
+}
 
 export default TrackComplaint

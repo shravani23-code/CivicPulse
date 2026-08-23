@@ -4,53 +4,61 @@ import '../App.css'
 function AdminDashboard() {
 
   const [complaints, setComplaints] = useState([])
+
   const [loading, setLoading] = useState(true)
+
   const [error, setError] = useState('')
 
-  const [searchTerm, setSearchTerm] = useState('')
-
-  const [statusFilter, setStatusFilter] = useState('All')
-  const [severityFilter, setSeverityFilter] = useState('All')
-  const [categoryFilter, setCategoryFilter] = useState('All')
+  const [updatingId, setUpdatingId] = useState('')
 
 
   // ======================================
-  // FETCH PRIORITY-RANKED COMPLAINTS
+  // FETCH MAX HEAP PRIORITY DATA
   // ======================================
 
   async function fetchComplaints() {
 
     try {
 
-      setLoading(true)
       setError('')
 
-      const response = await fetch(
-        'http://localhost:5000/api/complaints/priority'
-      )
+      const response =
+        await fetch(
+          'http://localhost:5000/api/complaints/priority'
+        )
 
-      const data = await response.json()
+
+      const data =
+        await response.json()
+
 
       if (!response.ok) {
 
         throw new Error(
           data.message ||
-          'Failed to fetch complaints'
+          'Failed to fetch complaints.'
         )
 
       }
+
 
       setComplaints(
         data.complaints || []
       )
 
+
     } catch (error) {
 
-      console.error(error)
+      console.error(
+        'Complaint fetch error:',
+        error
+      )
+
 
       setError(
-        'Unable to load complaints. Make sure the backend and C++ priority engine are running.'
+        'Unable to load complaints. Make sure the backend is running.'
       )
+
 
     } finally {
 
@@ -61,13 +69,19 @@ function AdminDashboard() {
   }
 
 
+  // ======================================
+  // LOAD DATA
+  // ======================================
+
   useEffect(() => {
+
     fetchComplaints()
+
   }, [])
 
 
   // ======================================
-  // UPDATE STATUS
+  // UPDATE COMPLAINT STATUS
   // ======================================
 
   async function updateStatus(
@@ -77,23 +91,37 @@ function AdminDashboard() {
 
     try {
 
-      const response = await fetch(
-
-        `http://localhost:5000/api/complaints/${complaintId}/status`,
-
-        {
-          method: 'PUT',
-
-          headers: {
-            'Content-Type': 'application/json'
-          },
-
-          body: JSON.stringify({
-            status: newStatus
-          })
-        }
-
+      setUpdatingId(
+        complaintId
       )
+
+
+      const response =
+        await fetch(
+          `http://localhost:5000/api/complaints/${complaintId}/status`,
+          {
+
+            method:
+              'PUT',
+
+            headers: {
+
+              'Content-Type':
+                'application/json'
+
+            },
+
+            body:
+              JSON.stringify({
+
+                status:
+                  newStatus
+
+              })
+
+          }
+        )
+
 
       const data =
         await response.json()
@@ -103,36 +131,42 @@ function AdminDashboard() {
 
         throw new Error(
           data.message ||
-          'Failed to update status'
+          'Failed to update status.'
         )
 
       }
 
 
-      setComplaints(
-        previousComplaints =>
+      // ==================================
+      // REFRESH MAX HEAP DATA
+      // ==================================
 
-          previousComplaints.map(
-            complaint =>
+      await fetchComplaints()
 
-              complaint.id === complaintId
 
-                ? {
-                    ...complaint,
-                    status: newStatus
-                  }
-
-                : complaint
-          )
+      console.log(
+        'Status updated:',
+        data
       )
+
 
     } catch (error) {
 
-      console.error(error)
+      console.error(
+        'Status update error:',
+        error
+      )
 
-      setError(
+
+      alert(
+        error.message ||
         'Failed to update complaint status.'
       )
+
+
+    } finally {
+
+      setUpdatingId('')
 
     }
 
@@ -150,214 +184,35 @@ function AdminDashboard() {
   const pendingComplaints =
     complaints.filter(
       complaint =>
-        complaint.status === 'Pending'
+        complaint.status ===
+        'Pending'
     ).length
 
 
   const resolvedComplaints =
     complaints.filter(
       complaint =>
-        complaint.status === 'Resolved'
+        complaint.status ===
+        'Resolved'
     ).length
 
 
   const highPriorityComplaints =
     complaints.filter(
       complaint =>
-        Number(complaint.priority) >= 30
+        Number(
+          complaint.priority
+        ) >= 30
     ).length
 
 
   // ======================================
-  // PRIORITY LABEL
+  // RENDER
   // ======================================
-
-  function getPriorityLabel(priority) {
-
-    const value = Number(priority)
-
-    if (value >= 40) {
-      return 'Critical'
-    }
-
-    if (value >= 30) {
-      return 'High'
-    }
-
-    if (value >= 20) {
-      return 'Medium'
-    }
-
-    return 'Low'
-  }
-
-
-  // ======================================
-  // CATEGORY OPTIONS
-  // ======================================
-
-  const categories = [
-
-    'All',
-
-    ...new Set(
-      complaints
-        .map(
-          complaint =>
-            complaint.category
-        )
-        .filter(Boolean)
-    )
-
-  ]
-
-
-  // ======================================
-  // HASH MAP
-  // ======================================
-  // Complaint ID → Complaint
-  //
-  // This gives us fast direct lookup
-  // when the user searches an exact ID.
-
-  const complaintMap = new Map(
-
-    complaints.map(
-      complaint => [
-        complaint.id.toLowerCase(),
-        complaint
-      ]
-    )
-
-  )
-
-
-  // ======================================
-  // FILTER + SEARCH COMPLAINTS
-  // ======================================
-
-  const filteredComplaints =
-    complaints.filter(
-      complaint => {
-
-        // -------------------------------
-        // SEARCH
-        // -------------------------------
-
-        const search =
-          searchTerm
-            .trim()
-            .toLowerCase()
-
-
-        let searchMatches = true
-
-
-        if (search !== '') {
-
-          // Exact Complaint ID lookup
-          const exactComplaint =
-            complaintMap.get(search)
-
-
-          if (exactComplaint) {
-
-            searchMatches =
-              exactComplaint.id === complaint.id
-
-          } else {
-
-            // General search
-            searchMatches =
-
-              complaint.id
-                ?.toLowerCase()
-                .includes(search)
-
-              ||
-
-              complaint.title
-                ?.toLowerCase()
-                .includes(search)
-
-              ||
-
-              complaint.category
-                ?.toLowerCase()
-                .includes(search)
-
-              ||
-
-              complaint.location
-                ?.toLowerCase()
-                .includes(search)
-
-          }
-
-        }
-
-
-        // -------------------------------
-        // STATUS
-        // -------------------------------
-
-        const statusMatches =
-          statusFilter === 'All' ||
-          complaint.status === statusFilter
-
-
-        // -------------------------------
-        // SEVERITY
-        // -------------------------------
-
-        const severityMatches =
-          severityFilter === 'All' ||
-          complaint.severity === severityFilter
-
-
-        // -------------------------------
-        // CATEGORY
-        // -------------------------------
-
-        const categoryMatches =
-          categoryFilter === 'All' ||
-          complaint.category === categoryFilter
-
-
-        return (
-
-          searchMatches &&
-
-          statusMatches &&
-
-          severityMatches &&
-
-          categoryMatches
-
-        )
-
-      }
-    )
-
-
-  // ======================================
-  // CLEAR ALL SEARCH + FILTERS
-  // ======================================
-
-  function clearFilters() {
-
-    setSearchTerm('')
-    setStatusFilter('All')
-    setSeverityFilter('All')
-    setCategoryFilter('All')
-
-  }
-
 
   return (
 
     <div className="admin-page">
-
 
       {/* ==================================
           HEADER
@@ -372,16 +227,19 @@ function AdminDashboard() {
           ← Back to CivicPulse
         </a>
 
+
         <p className="hero-label">
           CIVICPULSE ADMIN
         </p>
+
 
         <h1>
           Complaint <span>Dashboard</span>
         </h1>
 
+
         <p>
-          Monitor and prioritize civic complaints.
+          Monitor, prioritize and process civic complaints.
         </p>
 
       </div>
@@ -416,7 +274,6 @@ function AdminDashboard() {
       {!loading && !error && (
 
         <>
-
 
           {/* ==================================
               STATISTICS
@@ -479,34 +336,33 @@ function AdminDashboard() {
 
 
           {/* ==================================
-              PRIORITY CARD
+              MAX HEAP
           ================================== */}
 
           <div className="admin-card">
-
 
             <div className="admin-card-header">
 
               <div>
 
-                <p className="result-label">
-                  DSA PRIORITY VIEW
-                </p>
+               
+
 
                 <h2>
-                  Highest Priority Complaints
+                 Complaints
                 </h2>
 
-                <p>
-                  Ranked using C++ Max Heap
-                </p>
+
+                
 
               </div>
 
 
               <button
                 className="refresh-button"
-                onClick={fetchComplaints}
+                onClick={
+                  fetchComplaints
+                }
               >
                 Refresh
               </button>
@@ -514,218 +370,15 @@ function AdminDashboard() {
             </div>
 
 
-            {/* ==================================
-                SEARCH
-            ================================== */}
-
-            <div className="admin-search">
-
-              <label>
-                Search Complaints
-              </label>
-
-              <input
-
-                type="text"
-
-                value={searchTerm}
-
-                onChange={
-                  event =>
-                    setSearchTerm(
-                      event.target.value
-                    )
-                }
-
-                placeholder="Search by ID, title, category or location..."
-
-              />
-
-            </div>
-
-
-            {/* ==================================
-                FILTERS
-            ================================== */}
-
-            <div className="admin-filters">
-
-
-              {/* STATUS */}
-
-              <div className="filter-group">
-
-                <label>
-                  Status
-                </label>
-
-                <select
-                  value={statusFilter}
-                  onChange={
-                    event =>
-                      setStatusFilter(
-                        event.target.value
-                      )
-                  }
-                >
-
-                  <option value="All">
-                    All
-                  </option>
-
-                  <option value="Pending">
-                    Pending
-                  </option>
-
-                  <option value="In Progress">
-                    In Progress
-                  </option>
-
-                  <option value="Resolved">
-                    Resolved
-                  </option>
-
-                </select>
-
-              </div>
-
-
-              {/* SEVERITY */}
-
-              <div className="filter-group">
-
-                <label>
-                  Severity
-                </label>
-
-                <select
-                  value={severityFilter}
-                  onChange={
-                    event =>
-                      setSeverityFilter(
-                        event.target.value
-                      )
-                  }
-                >
-
-                  <option value="All">
-                    All
-                  </option>
-
-                  <option value="Critical">
-                    Critical
-                  </option>
-
-                  <option value="High">
-                    High
-                  </option>
-
-                  <option value="Medium">
-                    Medium
-                  </option>
-
-                  <option value="Low">
-                    Low
-                  </option>
-
-                </select>
-
-              </div>
-
-
-              {/* CATEGORY */}
-
-              <div className="filter-group">
-
-                <label>
-                  Category
-                </label>
-
-                <select
-                  value={categoryFilter}
-                  onChange={
-                    event =>
-                      setCategoryFilter(
-                        event.target.value
-                      )
-                  }
-                >
-
-                  {categories.map(
-                    category => (
-
-                      <option
-                        key={category}
-                        value={category}
-                      >
-                        {category}
-                      </option>
-
-                    )
-                  )}
-
-                </select>
-
-              </div>
-
-
-              {/* CLEAR */}
-
-              <button
-                className="refresh-button"
-                onClick={clearFilters}
-              >
-                Clear Filters
-              </button>
-
-            </div>
-
-
-            {/* ==================================
-                RESULT COUNT
-            ================================== */}
-
-            <p className="filter-result">
-
-              Showing{' '}
-
-              <strong>
-                {filteredComplaints.length}
-              </strong>
-
-              {' '}of{' '}
-
-              <strong>
-                {complaints.length}
-              </strong>
-
-              {' '}complaints
-
-            </p>
-
-
-            {/* ==================================
-                EMPTY STATE
-            ================================== */}
-
-            {filteredComplaints.length === 0 ? (
+            {complaints.length === 0 ? (
 
               <div className="empty-state">
-
-                No complaints match your search
-                or selected filters.
-
+                No complaints available.
               </div>
 
             ) : (
 
-
-              /* ==================================
-                 TABLE
-              ================================== */
-
               <div className="complaint-table">
-
 
                 <div className="table-row table-heading">
 
@@ -752,12 +405,14 @@ function AdminDashboard() {
                 </div>
 
 
-                {filteredComplaints.map(
+                {complaints.map(
                   complaint => (
 
                     <div
                       className="table-row"
-                      key={complaint.id}
+                      key={
+                        complaint.id
+                      }
                     >
 
                       <span>
@@ -777,15 +432,7 @@ function AdminDashboard() {
 
                       <span className="priority-value">
 
-                        {Number(
-                          complaint.priority
-                        )}
-
-                        {' - '}
-
-                        {getPriorityLabel(
-                          complaint.priority
-                        )}
+                        {complaint.priority}
 
                       </span>
 
@@ -793,10 +440,14 @@ function AdminDashboard() {
                       <span>
 
                         <select
-
                           value={
                             complaint.status ||
                             'Pending'
+                          }
+
+                          disabled={
+                            updatingId ===
+                            complaint.id
                           }
 
                           onChange={
@@ -806,7 +457,6 @@ function AdminDashboard() {
                                 event.target.value
                               )
                           }
-
                         >
 
                           <option value="Pending">
@@ -822,6 +472,16 @@ function AdminDashboard() {
                           </option>
 
                         </select>
+
+
+                        {updatingId ===
+                          complaint.id && (
+
+                          <small>
+                            Updating...
+                          </small>
+
+                        )}
 
                       </span>
 
@@ -843,6 +503,7 @@ function AdminDashboard() {
     </div>
 
   )
+
 }
 
 export default AdminDashboard

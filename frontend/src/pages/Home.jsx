@@ -1,6 +1,69 @@
+import { useEffect, useState } from 'react'
 import '../App.css'
 
 function Home() {
+
+  const [stats, setStats] = useState({
+    total: 0,
+    pending: 0,
+    inProgress: 0,
+    resolved: 0,
+    critical: 0
+  })
+
+  const [statsLoading, setStatsLoading] =
+    useState(true)
+
+
+  useEffect(() => {
+
+    async function fetchStats() {
+
+      try {
+
+        const response =
+          await fetch(
+            'http://localhost:5000/api/complaints/stats'
+          )
+
+
+        const data =
+          await response.json()
+
+
+        if (!response.ok) {
+
+          throw new Error(
+            data.message ||
+            'Failed to fetch statistics.'
+          )
+
+        }
+
+
+        setStats(data)
+
+      } catch (error) {
+
+        console.error(
+          'Statistics fetch error:',
+          error
+        )
+
+      } finally {
+
+        setStatsLoading(false)
+
+      }
+
+    }
+
+
+    fetchStats()
+
+  }, [])
+
+
   return (
     <div className="app">
 
@@ -94,23 +157,43 @@ function Home() {
           <div className="stats">
 
             <div className="stat">
-              <h3>1,284</h3>
-              <p>Total Complaints</p>
+              <h3>
+                {statsLoading ? '...' : stats.total}
+              </h3>
+
+              <p>
+                Total Complaints
+              </p>
             </div>
 
             <div className="stat">
-              <h3>327</h3>
-              <p>Pending</p>
+              <h3>
+                {statsLoading ? '...' : stats.pending}
+              </h3>
+
+              <p>
+                Pending
+              </p>
             </div>
 
             <div className="stat">
-              <h3>812</h3>
-              <p>Resolved</p>
+              <h3>
+                {statsLoading ? '...' : stats.resolved}
+              </h3>
+
+              <p>
+                Resolved
+              </p>
             </div>
 
             <div className="stat">
-              <h3>56</h3>
-              <p>Critical</p>
+              <h3>
+                {statsLoading ? '...' : stats.critical}
+              </h3>
+
+              <p>
+                Critical
+              </p>
             </div>
 
           </div>
