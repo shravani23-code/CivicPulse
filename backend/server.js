@@ -18,21 +18,22 @@ const app = express()
 // FRONTEND_ORIGIN can be a single origin or a comma-separated list
 // (useful for a Vercel production URL + preview deployments). Falls back
 // to allowing any origin when unset, so local development still works.
-const allowedOrigins = (process.env.FRONTEND_ORIGIN || '')
-  .split(',')
-  .map(origin => origin.trim())
-  .filter(Boolean)
+const allowedOrigins = [
+  'http://localhost:5175',
+  'http://localhost:5173',
+  'https://civic-pulse-murex-omega.vercel.app'
+];
 
 app.use(cors({
-  origin(origin, callback) {
-
-    if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
-      return callback(null, true)
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
     }
-
-    callback(new Error('Not allowed by CORS'))
-  }
-}))
+  },
+  credentials: true
+}));
 
 app.use(express.json())
 
