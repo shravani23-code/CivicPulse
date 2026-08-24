@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import {
   Menu,
@@ -12,6 +13,8 @@ import '../App.css'
 import SmartCity3D from '../components/SmartCity3D'
 import { useCountUp } from '../hooks/useCountUp'
 import { API_BASE_URL } from '../config/api'
+import { useAuth } from '../auth/useAuthContext'
+import Logo from '../components/Logo'
 
 const NAV_SECTIONS = ['home', 'features', 'how-it-works', 'about']
 
@@ -71,6 +74,8 @@ const HOW_IT_WORKS_STEPS = [
 ]
 
 function Home() {
+
+  const { isAuthenticated, user, logout } = useAuth()
 
   const [stats, setStats] = useState({
     total: 0,
@@ -204,9 +209,9 @@ function Home() {
       {/* Navigation Bar */}
       <nav className={`navbar${scrolled ? ' scrolled' : ''}`}>
 
-        <div className="logo">
-          Civic<span>Pulse</span>
-        </div>
+        <Link to="/">
+          <Logo size={30} />
+        </Link>
 
         <div className="nav-links">
           <a
@@ -237,13 +242,23 @@ function Home() {
 
         <div className="nav-right">
 
-          {/* Admin Dashboard */}
-          <a
-            href="/admin"
-            className="nav-button"
-          >
-            Admin Dashboard
-          </a>
+          {isAuthenticated && user.role === 'citizen' && (
+            <Link to="/dashboard" className="nav-button">My Complaints</Link>
+          )}
+
+          {isAuthenticated && user.role === 'admin' && (
+            <Link to="/admin" className="nav-button">Admin Dashboard</Link>
+          )}
+
+          {!isAuthenticated && (
+            <Link to="/login" className="nav-button">Citizen Login</Link>
+          )}
+
+          {isAuthenticated && (
+            <button type="button" className="nav-button nav-logout" onClick={logout}>
+              Log Out
+            </button>
+          )}
 
           <button
             type="button"
@@ -262,7 +277,28 @@ function Home() {
             <a href="#features" onClick={() => setMobileMenuOpen(false)}>Features</a>
             <a href="#how-it-works" onClick={() => setMobileMenuOpen(false)}>How It Works</a>
             <a href="#about" onClick={() => setMobileMenuOpen(false)}>About</a>
-            <a href="/admin" className="nav-button">Admin Dashboard</a>
+
+            {isAuthenticated && user.role === 'citizen' && (
+              <Link to="/dashboard" className="nav-button" onClick={() => setMobileMenuOpen(false)}>My Complaints</Link>
+            )}
+
+            {isAuthenticated && user.role === 'admin' && (
+              <Link to="/admin" className="nav-button" onClick={() => setMobileMenuOpen(false)}>Admin Dashboard</Link>
+            )}
+
+            {!isAuthenticated && (
+              <Link to="/login" className="nav-button" onClick={() => setMobileMenuOpen(false)}>Citizen Login</Link>
+            )}
+
+            {isAuthenticated && (
+              <button
+                type="button"
+                className="nav-button nav-logout"
+                onClick={() => { setMobileMenuOpen(false); logout() }}
+              >
+                Log Out
+              </button>
+            )}
           </div>
         )}
 
@@ -298,23 +334,17 @@ function Home() {
 
           <motion.div className="hero-buttons" variants={heroItemVariants}>
 
-            <motion.a
-              href="/report-complaint"
-              className="primary-button"
-              whileHover={{ scale: 1.03 }}
-              whileTap={{ scale: 0.97 }}
-            >
-              Report an Issue
-            </motion.a>
+            <motion.div whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}>
+              <Link to="/report-complaint" className="primary-button">
+                Report an Issue
+              </Link>
+            </motion.div>
 
-            <motion.a
-              href="/track-complaint"
-              className="secondary-button"
-              whileHover={{ scale: 1.03 }}
-              whileTap={{ scale: 0.97 }}
-            >
-              Track Complaint
-            </motion.a>
+            <motion.div whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}>
+              <Link to="/track-complaint" className="secondary-button">
+                Track Complaint
+              </Link>
+            </motion.div>
 
           </motion.div>
 
@@ -628,9 +658,7 @@ function Home() {
 
           <div className="footer-brand">
 
-            <div className="logo">
-              Civic<span>Pulse</span>
-            </div>
+            <Logo size={28} />
 
             <p>
               Intelligent civic complaint management.
@@ -643,10 +671,11 @@ function Home() {
           </div>
 
           <nav className="footer-nav" aria-label="Footer">
-            <a href="/">Home</a>
-            <a href="/report-complaint">Report a Complaint</a>
-            <a href="/track-complaint">Track Complaint</a>
-            <a href="/admin">Admin Dashboard</a>
+            <Link to="/">Home</Link>
+            <Link to="/report-complaint">Report a Complaint</Link>
+            <Link to="/track-complaint">Track Complaint</Link>
+            <Link to="/dashboard">My Complaints</Link>
+            <Link to="/admin/login">Admin Login</Link>
           </nav>
 
         </div>

@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
+import toast from 'react-hot-toast'
 import {
   Search,
   Inbox,
   SearchX,
-  Star,
   Zap
 } from 'lucide-react'
 import {
@@ -17,8 +18,12 @@ import {
   Cell
 } from 'recharts'
 import '../App.css'
-import { useCountUp } from '../hooks/useCountUp'
 import { API_BASE_URL } from '../config/api'
+import { useAuth } from '../auth/useAuthContext'
+import { useCountUp } from '../hooks/useCountUp'
+import StatusTabs from '../components/StatusTabs'
+import ComplaintDetailsModal from '../components/ComplaintDetailsModal'
+import CopyButton from '../components/CopyButton'
 
 const STATUS_COLORS = {
   Pending: '#d9a441',
@@ -33,18 +38,21 @@ const SEVERITY_COLORS = {
   Critical: '#c1503f'
 }
 
+const SEVERITY_RANK = { Critical: 4, High: 3, Medium: 2, Low: 1 }
+
+const SORT_OPTIONS = [
+  { value: 'priority-desc', label: 'Priority: High → Low (Priority Queue)' },
+  { value: 'priority-asc', label: 'Priority: Low → High' },
+  { value: 'severity-desc', label: 'Severity: Critical → Low' },
+  { value: 'severity-asc', label: 'Severity: Low → Critical' },
+  { value: 'newest', label: 'Newest First' },
+  { value: 'oldest', label: 'Oldest First' }
+]
+
 function statusToClass(status) {
   if (status === 'Resolved') return 'resolved'
   if (status === 'In Progress') return 'in-progress'
   return 'pending'
-}
-
-function starsForPriority(priority) {
-  const value = Number(priority)
-  if (value >= 40) return 5
-  if (value >= 30) return 4
-  if (value >= 20) return 3
-  return 1
 }
 
 function AnimatedStat({ value, loading }) {
@@ -54,7 +62,10 @@ function AnimatedStat({ value, loading }) {
 
 function AdminDashboard() {
 
+  const { token, logout } = useAuth()
+
   const [complaints, setComplaints] = useState([])
+  const [mostUrgent, setMostUrgent] = useState(null)
 
   const [loading, setLoading] = useState(true)
 
@@ -65,12 +76,16 @@ function AdminDashboard() {
   const [searchTerm, setSearchTerm] = useState('')
   const [statusFilter, setStatusFilter] = useState('All')
   const [severityFilter, setSeverityFilter] = useState('All')
+  const [sortBy, setSortBy] = useState('priority-desc')
 
-  const [poppedId, setPoppedId] = useState('')
+  const [selectedComplaint, setSelectedComplaint] = useState(null)
 
 
   // ======================================
-  // FETCH MAX HEAP PRIORITY DATA
+  // FETCH — MAX HEAP PRIORITY DATA
+  // (the "priority-desc" order is exactly what the backend's max heap
+  // extraction produces; every other sort is a plain client-side sort of
+  // that same fetched dataset)
   // ======================================
 
   async function fetchComplaints() {
@@ -81,7 +96,8 @@ function AdminDashboard() {
 
       const response =
         await fetch(
-          `${API_BASE_URL}/api/complaints/priority`
+          `${API_BASE_URL}/api/complaints/priority?includeResolved=true`,
+          { headers: { Authorization: `Bearer ${token}` } }
         )
 
 
@@ -103,12 +119,14 @@ function AdminDashboard() {
         data.complaints || []
       )
 
+      setMostUrgent(data.mostUrgent || null)
 
-    } catch (error) {
+
+    } catch (fetchError) {
 
       console.error(
         'Complaint fetch error:',
-        error
+        fetchError
       )
 
 
@@ -126,19 +144,16 @@ function AdminDashboard() {
   }
 
 
-  // ======================================
-  // LOAD DATA
-  // ======================================
-
   useEffect(() => {
 
     fetchComplaints()
 
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
 
   // ======================================
-  // UPDATE COMPLAINT STATUS
+  // UPDATE COMPLAINT STATUS (admin-only route)
   // ======================================
 
   async function updateStatus(
@@ -164,7 +179,10 @@ function AdminDashboard() {
             headers: {
 
               'Content-Type':
-                'application/json'
+                'application/json',
+
+              Authorization:
+                `Bearer ${token}`
 
             },
 
@@ -195,28 +213,24 @@ function AdminDashboard() {
 
 
       // ==================================
-      // REFRESH MAX HEAP DATA
+      // REFRESH DATA
       // ==================================
 
       await fetchComplaints()
 
+      toast.success(`Complaint ${complaintId} marked as ${newStatus}.`)
 
-      console.log(
-        'Status updated:',
-        data
+      setSelectedComplaint(current =>
+        current && current.id === complaintId
+          ? { ...current, status: newStatus }
+          : current
       )
 
 
-    } catch (error) {
+    } catch (updateError) {
 
-      console.error(
-        'Status update error:',
-        error
-      )
-
-
-      alert(
-        error.message ||
+      toast.error(
+        updateError.message ||
         'Failed to update complaint status.'
       )
 
@@ -263,15 +277,25 @@ function AdminDashboard() {
     ).length
 
 
+  const statusCounts = useMemo(() => ({
+
+    All: complaints.length,
+    Pending: complaints.filter(c => c.status === 'Pending').length,
+    'In Progress': complaints.filter(c => c.status === 'In Progress').length,
+    Resolved: complaints.filter(c => c.status === 'Resolved').length
+
+  }), [complaints])
+
+
   // ======================================
-  // FILTERED TABLE DATA
+  // FILTERED + SORTED TABLE DATA
   // ======================================
 
   const filteredComplaints = useMemo(() => {
 
     const term = searchTerm.trim().toLowerCase()
 
-    return complaints.filter(complaint => {
+    const filtered = complaints.filter(complaint => {
 
       const matchesSearch =
         !term ||
@@ -290,7 +314,27 @@ function AdminDashboard() {
 
     })
 
-  }, [complaints, searchTerm, statusFilter, severityFilter])
+    // "priority-desc" needs no re-sort — `complaints` already arrives in
+    // max-heap extraction order from the backend.
+    if (sortBy === 'priority-desc') return filtered
+
+    const sorted = [...filtered]
+
+    if (sortBy === 'priority-asc') {
+      sorted.sort((a, b) => a.priority - b.priority)
+    } else if (sortBy === 'severity-desc') {
+      sorted.sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity])
+    } else if (sortBy === 'severity-asc') {
+      sorted.sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity])
+    } else if (sortBy === 'newest') {
+      sorted.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+    } else if (sortBy === 'oldest') {
+      sorted.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
+    }
+
+    return sorted
+
+  }, [complaints, searchTerm, statusFilter, severityFilter, sortBy])
 
 
   // ======================================
@@ -312,39 +356,6 @@ function AdminDashboard() {
 
 
   // ======================================
-  // PRIORITY QUEUE BUCKETS (real max-heap output, grouped for display)
-  // ======================================
-
-  const priorityBuckets = useMemo(() => {
-
-    const high = complaints.filter(c => Number(c.priority) >= 30)
-    const medium = complaints.filter(c => Number(c.priority) === 20)
-    const low = complaints.filter(c => Number(c.priority) <= 10)
-
-    return [
-      { key: 'high', label: 'High Priority', items: high },
-      { key: 'medium', label: 'Medium Priority', items: medium },
-      { key: 'low', label: 'Low Priority', items: low }
-    ]
-
-  }, [complaints])
-
-
-  const nextInQueue = complaints[0]
-
-
-  function handleSimulatePop() {
-
-    if (!nextInQueue) return
-
-    setPoppedId(nextInQueue.id)
-
-    setTimeout(() => setPoppedId(''), 1400)
-
-  }
-
-
-  // ======================================
   // RENDER
   // ======================================
 
@@ -358,12 +369,12 @@ function AdminDashboard() {
 
       <div className="admin-header">
 
-        <a
-          href="/"
+        <Link
+          to="/"
           className="back-link"
         >
           ← Back to CivicPulse
-        </a>
+        </Link>
 
 
         <p className="hero-label">
@@ -379,6 +390,10 @@ function AdminDashboard() {
         <p>
           Monitor, prioritize and process civic complaints.
         </p>
+
+        <div className="dashboard-actions">
+          <button type="button" className="secondary-button" onClick={logout}>Log Out</button>
+        </div>
 
       </div>
 
@@ -466,6 +481,34 @@ function AdminDashboard() {
 
 
           {/* ==================================
+              MOST URGENT COMPLAINT (heap peek)
+          ================================== */}
+
+          {mostUrgent && (
+
+            <motion.div
+              className="urgent-callout"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.3 }}
+              onClick={() => setSelectedComplaint(mostUrgent)}
+            >
+              <div className="urgent-callout-icon">
+                <Zap size={18} />
+              </div>
+              <div className="urgent-callout-body">
+                <span className="urgent-callout-label">Most Urgent Complaint (Priority Queue Peek)</span>
+                <strong>{mostUrgent.id} — {mostUrgent.title}</strong>
+                <span className="urgent-callout-meta">
+                  {mostUrgent.severity} severity · Priority score {mostUrgent.priority}
+                </span>
+              </div>
+            </motion.div>
+
+          )}
+
+
+          {/* ==================================
               DISTRIBUTION CHARTS
           ================================== */}
 
@@ -532,7 +575,7 @@ function AdminDashboard() {
 
 
           {/* ==================================
-              MAX HEAP TABLE
+              COMPLAINTS TABLE
           ================================== */}
 
           <div className="admin-card">
@@ -541,7 +584,6 @@ function AdminDashboard() {
 
               <div>
 
-                
                 <h2>
                  Complaints
                 </h2>
@@ -559,6 +601,11 @@ function AdminDashboard() {
               </button>
 
             </div>
+
+
+            {complaints.length > 0 && (
+              <StatusTabs value={statusFilter} onChange={setStatusFilter} counts={statusCounts} />
+            )}
 
 
             {/* ==================================
@@ -605,19 +652,6 @@ function AdminDashboard() {
                 <div className="admin-filters">
 
                   <div className="filter-group">
-                    <label>Status</label>
-                    <select
-                      value={statusFilter}
-                      onChange={event => setStatusFilter(event.target.value)}
-                    >
-                      <option value="All">All Statuses</option>
-                      <option value="Pending">Pending</option>
-                      <option value="In Progress">In Progress</option>
-                      <option value="Resolved">Resolved</option>
-                    </select>
-                  </div>
-
-                  <div className="filter-group">
                     <label>Severity</label>
                     <select
                       value={severityFilter}
@@ -628,6 +662,18 @@ function AdminDashboard() {
                       <option value="Medium">Medium</option>
                       <option value="High">High</option>
                       <option value="Critical">Critical</option>
+                    </select>
+                  </div>
+
+                  <div className="filter-group">
+                    <label>Sort By</label>
+                    <select
+                      value={sortBy}
+                      onChange={event => setSortBy(event.target.value)}
+                    >
+                      {SORT_OPTIONS.map(option => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
                     </select>
                   </div>
 
@@ -692,17 +738,21 @@ function AdminDashboard() {
                     (complaint, index) => (
 
                       <motion.div
-                        className="table-row"
+                        className="table-row table-row-clickable"
                         key={
                           complaint.id
                         }
                         initial={{ opacity: 0, y: 8 }}
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ duration: 0.25, delay: Math.min(index, 8) * 0.03 }}
+                        onClick={() => setSelectedComplaint(complaint)}
                       >
 
-                        <span>
+                        <span className="complaint-id-cell">
                           {complaint.id}
+                          <span onClick={event => event.stopPropagation()}>
+                            <CopyButton value={complaint.id} />
+                          </span>
                         </span>
 
 
@@ -741,6 +791,8 @@ function AdminDashboard() {
                               updatingId ===
                               complaint.id
                             }
+
+                            onClick={event => event.stopPropagation()}
 
                             onChange={
                               event =>
@@ -790,11 +842,18 @@ function AdminDashboard() {
 
           </div>
 
-
-         
-
         </>
 
+      )}
+
+      {selectedComplaint && (
+        <ComplaintDetailsModal
+          complaint={selectedComplaint}
+          onClose={() => setSelectedComplaint(null)}
+          isAdmin
+          onStatusChange={updateStatus}
+          updating={updatingId === selectedComplaint.id}
+        />
       )}
 
     </div>

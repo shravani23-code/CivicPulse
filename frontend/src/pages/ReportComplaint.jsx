@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
+import toast from 'react-hot-toast'
 import {
   Construction,
   Trash2,
@@ -10,10 +12,15 @@ import {
   MoreHorizontal,
   UploadCloud,
   X,
-  CheckCircle2
+  CheckCircle2,
+  Navigation,
+  Loader2
 } from 'lucide-react'
 import '../App.css'
 import { API_BASE_URL } from '../config/api'
+import { useAuth } from '../auth/useAuthContext'
+import CopyButton from '../components/CopyButton'
+import ImageGallery from '../components/ImageGallery'
 
 const CATEGORIES = [
   { value: 'Road', label: 'Road / Pothole', icon: Construction },
@@ -32,9 +39,16 @@ const SEVERITIES = [
   { value: 'Critical', label: 'Critical', hint: 'Urgent, safety risk', color: '#c1503f' }
 ]
 
-const STEP_LABELS = ['Details', 'Location & Severity', 'Photo', 'Review']
+const STEP_LABELS = ['Details', 'Location & Severity', 'Photos', 'Review']
+
+const MAX_IMAGES = 5
+const MAX_IMAGE_SIZE = 5 * 1024 * 1024 // 5MB
+const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
 
 function ReportComplaint() {
+
+  const { token } = useAuth()
+  const navigate = useNavigate()
 
   const [formData, setFormData] = useState({
     title: '',
@@ -42,22 +56,25 @@ function ReportComplaint() {
     description: '',
     location: '',
     severity: '',
-    image: null
+    images: [],
+    latitude: null,
+    longitude: null
   })
 
   const [step, setStep] = useState(1)
   const [stepError, setStepError] = useState('')
-  const [imagePreview, setImagePreview] = useState(null)
+  const [imagePreviews, setImagePreviews] = useState([])
   const [isDragging, setIsDragging] = useState(false)
+  const [imageError, setImageError] = useState('')
+
+  const [locationStatus, setLocationStatus] = useState('idle') // idle | locating | success | error
+  const [locationError, setLocationError] = useState('')
 
   const [submittedComplaint, setSubmittedComplaint] = useState(null)
-
   const [error, setError] = useState('')
-
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   const fileInputRef = useRef(null)
-  const imagePreviewRef = useRef(null)
 
 
   // Handle text, select and textarea changes
@@ -81,36 +98,58 @@ function ReportComplaint() {
   }
 
 
-  // Set (or clear) the selected image and its preview URL together,
-  // revoking the previous object URL to avoid leaking memory.
-  function setImageFile(file) {
+  // Add one or more image files, validating type/size and the 5-image cap.
+  function addImages(fileList) {
 
-    if (imagePreviewRef.current) {
-      URL.revokeObjectURL(imagePreviewRef.current)
+    setImageError('')
+
+    const incoming = Array.from(fileList || [])
+
+    if (incoming.length === 0) return
+
+    const accepted = []
+
+    for (const file of incoming) {
+
+      if (formData.images.length + accepted.length >= MAX_IMAGES) {
+        setImageError(`You can attach up to ${MAX_IMAGES} photos.`)
+        break
+      }
+
+      if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
+        setImageError('Only JPEG, PNG, WEBP or GIF images are allowed.')
+        continue
+      }
+
+      if (file.size > MAX_IMAGE_SIZE) {
+        setImageError('Each photo must be 5MB or smaller.')
+        continue
+      }
+
+      accepted.push(file)
+
     }
 
-    const url = file ? URL.createObjectURL(file) : null
-    imagePreviewRef.current = url
+    if (accepted.length === 0) return
 
-    setFormData(prev => ({ ...prev, image: file }))
-    setImagePreview(url)
+    setFormData(prev => ({ ...prev, images: [...prev.images, ...accepted] }))
+
+    setImagePreviews(prev => [
+      ...prev,
+      ...accepted.map(file => URL.createObjectURL(file))
+    ])
+
   }
 
-
-  // Handle image selection
   function handleImageChange(event) {
-    setImageFile(event.target.files[0] || null)
+    addImages(event.target.files)
+    event.target.value = ''
   }
 
   function handleDrop(event) {
     event.preventDefault()
     setIsDragging(false)
-
-    const file = event.dataTransfer.files && event.dataTransfer.files[0]
-
-    if (file && file.type.startsWith('image/')) {
-      setImageFile(file)
-    }
+    addImages(event.dataTransfer.files)
   }
 
   function handleDragOver(event) {
@@ -122,22 +161,87 @@ function ReportComplaint() {
     setIsDragging(false)
   }
 
-  function removeImage() {
-    setImageFile(null)
-    if (fileInputRef.current) {
-      fileInputRef.current.value = ''
-    }
+  function removeImageAt(index) {
+
+    URL.revokeObjectURL(imagePreviews[index])
+
+    setFormData(prev => ({
+      ...prev,
+      images: prev.images.filter((_, i) => i !== index)
+    }))
+
+    setImagePreviews(prev => prev.filter((_, i) => i !== index))
+
   }
 
 
-  // Revoke the last object URL on unmount
+  // Revoke all preview object URLs on unmount
   useEffect(() => {
     return () => {
-      if (imagePreviewRef.current) {
-        URL.revokeObjectURL(imagePreviewRef.current)
-      }
+      imagePreviews.forEach(url => URL.revokeObjectURL(url))
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+
+  // ======================================
+  // LIVE LOCATION
+  // ======================================
+
+  function handleUseCurrentLocation() {
+
+    if (!navigator.geolocation) {
+      setLocationStatus('error')
+      setLocationError('Geolocation is not supported by this browser. Please enter the location manually.')
+      return
+    }
+
+    setLocationStatus('locating')
+    setLocationError('')
+
+    navigator.geolocation.getCurrentPosition(
+
+      async (position) => {
+
+        const { latitude, longitude } = position.coords
+
+        setFormData(prev => ({ ...prev, latitude, longitude }))
+        setLocationStatus('success')
+
+        try {
+
+          const response = await fetch(
+            `https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}`
+          )
+
+          const data = await response.json()
+
+          if (data && data.display_name) {
+            setFormData(prev => ({ ...prev, location: data.display_name }))
+          }
+
+        } catch {
+          // Coordinates were still captured — reverse geocoding is a nice-to-have.
+        }
+
+      },
+
+      (geoError) => {
+
+        setLocationStatus('error')
+
+        if (geoError.code === geoError.PERMISSION_DENIED) {
+          setLocationError('Location permission denied. You can still enter the location manually below.')
+        } else {
+          setLocationError('Could not determine your location. Please enter it manually below.')
+        }
+
+      },
+
+      { enableHighAccuracy: true, timeout: 10000 }
+    )
+
+  }
 
 
   function validateStep(currentStep) {
@@ -185,30 +289,39 @@ function ReportComplaint() {
 
     try {
 
+      const body = new FormData()
+
+      body.append('title', formData.title)
+      body.append('category', formData.category)
+      body.append('description', formData.description)
+      body.append('location', formData.location)
+      body.append('severity', formData.severity)
+
+      if (formData.latitude !== null) body.append('latitude', formData.latitude)
+      if (formData.longitude !== null) body.append('longitude', formData.longitude)
+
+      formData.images.forEach(file => body.append('images', file))
+
       const response = await fetch(
         `${API_BASE_URL}/api/complaints`,
         {
           method: 'POST',
-
           headers: {
-            'Content-Type': 'application/json'
+            Authorization: `Bearer ${token}`
           },
-
-          body: JSON.stringify({
-            title: formData.title,
-            category: formData.category,
-            description: formData.description,
-            location: formData.location,
-            severity: formData.severity
-          })
+          body
         }
       )
 
-
       const data = await response.json()
 
-
       if (!response.ok) {
+
+        if (response.status === 401) {
+          toast.error('Your session has expired. Please log in again.')
+          navigate('/login', { state: { from: '/report-complaint' } })
+          return
+        }
 
         setError(
           data.message || 'Failed to submit complaint.'
@@ -219,28 +332,9 @@ function ReportComplaint() {
         return
       }
 
+      setSubmittedComplaint(data.complaint)
 
-      console.log(
-        'Complaint received from backend:',
-        data
-      )
-
-
-      // Backend-generated complaint
-      setSubmittedComplaint({
-        ...data.complaint,
-
-        imageName: formData.image
-          ? formData.image.name
-          : 'No image uploaded'
-      })
-
-    } catch (error) {
-
-      console.error(
-        'Backend connection error:',
-        error
-      )
+    } catch {
 
       setError(
         'Unable to connect to CivicPulse server. Please check your internet connection and try again.'
@@ -264,12 +358,9 @@ function ReportComplaint() {
 
       <div className="complaint-header">
 
-        <a
-          href="/"
-          className="back-link"
-        >
+        <Link to="/" className="back-link">
           ← Back to CivicPulse
-        </a>
+        </Link>
 
         <p className="hero-label">
           CIVIC COMPLAINT
@@ -413,13 +504,39 @@ function ReportComplaint() {
                     Location
                   </label>
 
-                  <input
-                    type="text"
-                    name="location"
-                    placeholder="Example: Near PCCOE, Nigdi"
-                    value={formData.location}
-                    onChange={handleChange}
-                  />
+                  <div className="location-input-row">
+
+                    <input
+                      type="text"
+                      name="location"
+                      placeholder="Example: Near PCCOE, Nigdi"
+                      value={formData.location}
+                      onChange={handleChange}
+                    />
+
+                    <button
+                      type="button"
+                      className="location-button"
+                      onClick={handleUseCurrentLocation}
+                      disabled={locationStatus === 'locating'}
+                    >
+                      {locationStatus === 'locating'
+                        ? <Loader2 size={16} className="spin" />
+                        : <Navigation size={16} />}
+                      Use My Current Location
+                    </button>
+
+                  </div>
+
+                  {locationStatus === 'success' && (
+                    <small className="location-hint success">
+                      Location captured ({formData.latitude.toFixed(5)}, {formData.longitude.toFixed(5)}). You can still edit the text above.
+                    </small>
+                  )}
+
+                  {locationStatus === 'error' && (
+                    <small className="location-hint error">{locationError}</small>
+                  )}
 
                 </div>
 
@@ -488,10 +605,10 @@ function ReportComplaint() {
                 <div className="form-group">
 
                   <label>
-                    Upload Photo
+                    Upload Photos
                   </label>
 
-                  {!imagePreview ? (
+                  {formData.images.length < MAX_IMAGES && (
 
                     <div
                       className={`dropzone${isDragging ? ' dragging' : ''}`}
@@ -504,40 +621,55 @@ function ReportComplaint() {
                       <UploadCloud size={28} />
 
                       <p>
-                        Drag and drop a photo here, or click to browse
+                        Drag and drop photos here, or click to browse ({formData.images.length}/{MAX_IMAGES})
                       </p>
 
                       <input
                         ref={fileInputRef}
                         type="file"
                         accept="image/*"
+                        multiple
                         onChange={handleImageChange}
                         style={{ display: 'none' }}
                       />
 
                     </div>
 
-                  ) : (
+                  )}
 
-                    <div className="image-preview">
+                  {imageError && (
+                    <small className="location-hint error">{imageError}</small>
+                  )}
 
-                      <img src={imagePreview} alt="Complaint preview" />
+                  {imagePreviews.length > 0 && (
 
-                      <button
-                        type="button"
-                        className="image-remove"
-                        onClick={removeImage}
-                        aria-label="Remove photo"
-                      >
-                        <X size={16} />
-                      </button>
+                    <div className="image-preview-grid">
+
+                      {imagePreviews.map((preview, index) => (
+
+                        <div className="image-preview" key={preview}>
+
+                          <img src={preview} alt={`Selected photo ${index + 1}`} />
+
+                          <button
+                            type="button"
+                            className="image-remove"
+                            onClick={() => removeImageAt(index)}
+                            aria-label={`Remove photo ${index + 1}`}
+                          >
+                            <X size={16} />
+                          </button>
+
+                        </div>
+
+                      ))}
 
                     </div>
 
                   )}
 
                   <small>
-                    Upload an image showing the civic problem. This step is optional.
+                    Upload up to {MAX_IMAGES} images showing the civic problem. This step is optional.
                   </small>
 
                 </div>
@@ -580,8 +712,12 @@ function ReportComplaint() {
                   </div>
 
                   <div className="detail-item">
-                    <span>Photo</span>
-                    <strong>{formData.image ? formData.image.name : 'No image uploaded'}</strong>
+                    <span>Photos</span>
+                    <strong>
+                      {formData.images.length > 0
+                        ? `${formData.images.length} photo${formData.images.length > 1 ? 's' : ''} attached`
+                        : 'No photos uploaded'}
+                    </strong>
                   </div>
 
                 </div>
@@ -715,7 +851,14 @@ function ReportComplaint() {
               {submittedComplaint.id}
             </strong>
 
+            <CopyButton value={submittedComplaint.id} />
+
           </div>
+
+          <p className="success-tracking-hint">
+            You can track this anytime from <Link to="/dashboard">My Complaints</Link> or on the{' '}
+            <Link to="/track-complaint">Track Complaint</Link> page using this Complaint ID.
+          </p>
 
 
           {/* Submitted Details */}
@@ -766,15 +909,6 @@ function ReportComplaint() {
               </strong>
             </div>
 
-
-            <div className="detail-item">
-              <span>Photo</span>
-
-              <strong>
-                {submittedComplaint.imageName}
-              </strong>
-            </div>
-
           </div>
 
 
@@ -793,12 +927,20 @@ function ReportComplaint() {
           </div>
 
 
-          <a
-            href="/"
+          {/* Photos */}
+
+          <div className="submitted-description">
+            <span>Photos</span>
+            <ImageGallery images={submittedComplaint.images} />
+          </div>
+
+
+          <Link
+            to="/"
             className="primary-button"
           >
             Back to Home
-          </a>
+          </Link>
 
         </motion.div>
 

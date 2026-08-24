@@ -3,6 +3,11 @@ import { motion } from 'framer-motion'
 import { Link2 } from 'lucide-react'
 import '../App.css'
 import { API_BASE_URL } from '../config/api'
+import CopyButton from '../components/CopyButton'
+import ImageGallery from '../components/ImageGallery'
+import LocationMap from '../components/LocationMap'
+
+const COMPLAINT_ID_REGEX = /^CP\d{8}$/
 
 const containerVariants = {
   hidden: {},
@@ -34,10 +39,15 @@ function TrackComplaint() {
     setComplaint(null)
     setHistory([])
 
-    const id = complaintId.trim()
+    const id = complaintId.trim().toUpperCase()
 
     if (!id) {
       setError('Please enter a Complaint ID.')
+      return
+    }
+
+    if (!COMPLAINT_ID_REGEX.test(id)) {
+      setError('Please enter a valid Complaint ID: CP followed by exactly 8 digits, e.g. CP12880613.')
       return
     }
 
@@ -234,6 +244,7 @@ function TrackComplaint() {
 
                 <h2>
                   {complaint.id}
+                  <CopyButton value={complaint.id} />
                 </h2>
 
               </div>
@@ -352,6 +363,30 @@ function TrackComplaint() {
                 {complaint.description}
               </p>
 
+            </motion.div>
+
+            {/* ==================================
+                LOCATION MAP
+            ================================== */}
+
+            <motion.div
+              className="modal-section"
+              variants={itemVariants}
+            >
+              <span className="modal-section-label">Location Map</span>
+              <LocationMap latitude={complaint.latitude} longitude={complaint.longitude} />
+            </motion.div>
+
+            {/* ==================================
+                PHOTOS
+            ================================== */}
+
+            <motion.div
+              className="modal-section"
+              variants={itemVariants}
+            >
+              <span className="modal-section-label">Photos</span>
+              <ImageGallery images={complaint.images} />
             </motion.div>
 
             {/* ==================================

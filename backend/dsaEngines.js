@@ -7,8 +7,67 @@
 // queue) directly in Node so the same DSA logic actually runs in production.
 
 // ======================================
+// SEVERITY vs PRIORITY
+// ======================================
+//
+// Severity is a fixed judgment of how serious the civic issue itself is
+// (set once, by the citizen, at submission time). Priority is a computed
+// score that decides processing order — it starts from severity but also
+// grows the longer a complaint has been waiting, so an old Medium
+// complaint can eventually outrank a brand-new High one. Priority is
+// never typed in by anyone; it's recalculated from this formula every
+// time complaints are read.
+//
+//   priorityScore = severityScore(severity) + waitingTimeFactor(createdAt)
+//
+//   severityScore: Critical=40, High=30, Medium=20, Low=10
+//   waitingTimeFactor: +2 for every 6 hours a Pending/In Progress
+//                       complaint has been waiting, capped at +20
+
+function severityScore(severity) {
+
+  if (severity === 'Critical') return 40
+  if (severity === 'High') return 30
+  if (severity === 'Medium') return 20
+
+  return 10
+}
+
+function waitingTimeFactor(createdAt, status) {
+
+  if (status === 'Resolved') {
+    return 0
+  }
+
+  const ageMs = Date.now() - new Date(createdAt).getTime()
+  const ageHours = ageMs / (1000 * 60 * 60)
+
+  const bonus = Math.floor(ageHours / 6) * 2
+
+  return Math.min(bonus, 20)
+}
+
+function computePriorityScore(complaint) {
+
+  return severityScore(complaint.severity) + waitingTimeFactor(complaint.createdAt, complaint.status)
+
+}
+
+
+// ======================================
 // PRIORITY QUEUE — MAX HEAP
 // (mirrors dsa/priority_engine.cpp)
+//
+// Time complexity:
+//   push (insert)   — O(log n)  (heapifyUp walks at most tree height)
+//   top  (peek)      — O(1)      (highest priority is always the root)
+//   pop  (extract)   — O(log n)  (heapifyDown walks at most tree height)
+//
+// A plain array would need O(n) to find the max on every extraction
+// (or O(n log n) to re-sort after every insert/status change). The heap
+// keeps the "next complaint to handle" retrieval at O(1) and every
+// insert/extract at O(log n), which is what actually matters when the
+// admin is repeatedly asking "what's most urgent right now?".
 // ======================================
 
 class MaxHeapPriorityQueue {
@@ -17,11 +76,22 @@ class MaxHeapPriorityQueue {
     this.heap = []
   }
 
+  // Higher score wins; equal scores are broken by age (older first) so
+  // equal-priority complaints don't get an arbitrary/unstable order.
+  isHigherPriority(a, b) {
+
+    if (a.priority !== b.priority) {
+      return a.priority > b.priority
+    }
+
+    return new Date(a.createdAt).getTime() < new Date(b.createdAt).getTime()
+  }
+
   heapifyUp(index) {
     while (index > 0) {
       const parent = Math.floor((index - 1) / 2)
 
-      if (this.heap[parent].priority >= this.heap[index].priority) {
+      if (!this.isHigherPriority(this.heap[index], this.heap[parent])) {
         break
       }
 
@@ -38,11 +108,11 @@ class MaxHeapPriorityQueue {
       const right = 2 * index + 2
       let largest = index
 
-      if (left < size && this.heap[left].priority > this.heap[largest].priority) {
+      if (left < size && this.isHigherPriority(this.heap[left], this.heap[largest])) {
         largest = left
       }
 
-      if (right < size && this.heap[right].priority > this.heap[largest].priority) {
+      if (right < size && this.isHigherPriority(this.heap[right], this.heap[largest])) {
         largest = right
       }
 
@@ -55,15 +125,18 @@ class MaxHeapPriorityQueue {
     }
   }
 
+  // Insert — O(log n)
   push(item) {
     this.heap.push(item)
     this.heapifyUp(this.heap.length - 1)
   }
 
+  // Peek — O(1)
   top() {
     return this.heap[0]
   }
 
+  // Extract highest priority — O(log n)
   pop() {
     if (this.heap.length === 0) return
 
@@ -80,13 +153,22 @@ class MaxHeapPriorityQueue {
   }
 }
 
-// Drains complaints out of a max heap, highest priority first.
+// Builds a max heap from complaints (computing each one's live priority
+// score first) and drains it — the resulting order is the actual heap
+// extraction order, not a plain array .sort().
 function rankByPriority(complaints) {
 
   const queue = new MaxHeapPriorityQueue()
 
   for (const complaint of complaints) {
-    queue.push(complaint)
+
+    const priority = computePriorityScore(complaint)
+
+    queue.push({
+      ...(complaint.toObject ? complaint.toObject() : complaint),
+      priority
+    })
+
   }
 
   const ranked = []
@@ -97,6 +179,26 @@ function rankByPriority(complaints) {
   }
 
   return ranked
+}
+
+// Peek only — builds the heap and returns the single most urgent
+// complaint without extracting it. O(n) to build + O(1) to read the top.
+function peekHighestPriority(complaints) {
+
+  const queue = new MaxHeapPriorityQueue()
+
+  for (const complaint of complaints) {
+
+    const priority = computePriorityScore(complaint)
+
+    queue.push({
+      ...(complaint.toObject ? complaint.toObject() : complaint),
+      priority
+    })
+
+  }
+
+  return queue.isEmpty() ? null : queue.top()
 }
 
 
@@ -211,8 +313,12 @@ function processQueue(complaints) {
 }
 
 module.exports = {
+  severityScore,
+  waitingTimeFactor,
+  computePriorityScore,
   MaxHeapPriorityQueue,
   rankByPriority,
+  peekHighestPriority,
   HistoryLinkedList,
   buildHistoryTimeline,
   ComplaintQueue,
