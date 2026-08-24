@@ -18,6 +18,7 @@ import {
 } from 'recharts'
 import '../App.css'
 import { useCountUp } from '../hooks/useCountUp'
+import { API_BASE_URL } from '../config/api'
 
 const STATUS_COLORS = {
   Pending: '#d9a441',
@@ -80,7 +81,7 @@ function AdminDashboard() {
 
       const response =
         await fetch(
-          'http://https://civicpulse-backend-nt8q.onrender.com/api/complaints/priority'
+          `${API_BASE_URL}/api/complaints/priority`
         )
 
 
@@ -154,7 +155,7 @@ function AdminDashboard() {
 
       const response =
         await fetch(
-          `http://https://civicpulse-backend-nt8q.onrender.com/api/complaints/${complaintId}/status`,
+          `${API_BASE_URL}/api/complaints/${complaintId}/status`,
           {
 
             method:

@@ -1,20 +1,37 @@
 const express = require('express')
-const { spawn } = require('child_process')
-const path = require('path')
 const cors = require('cors')
 const mongoose = require('mongoose')
 require('dotenv').config()
 
+const { rankByPriority, buildHistoryTimeline, processQueue } = require('./dsaEngines')
+
 
 const app = express()
-const PORT = 5000
 
 
 // ======================================
 // MIDDLEWARE
 // ======================================
 
-app.use(cors())
+// FRONTEND_ORIGIN can be a single origin or a comma-separated list
+// (useful for a Vercel production URL + preview deployments). Falls back
+// to allowing any origin when unset, so local development still works.
+const allowedOrigins = (process.env.FRONTEND_ORIGIN || '')
+  .split(',')
+  .map(origin => origin.trim())
+  .filter(Boolean)
+
+app.use(cors({
+  origin(origin, callback) {
+
+    if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+      return callback(null, true)
+    }
+
+    callback(new Error('Not allowed by CORS'))
+  }
+}))
+
 app.use(express.json())
 
 
@@ -257,7 +274,7 @@ app.get(
 
 // ======================================
 // PRIORITY COMPLAINTS
-// C++ MAX HEAP
+// MAX HEAP
 // ======================================
 
 app.get(
@@ -265,11 +282,6 @@ app.get(
   async (req, res) => {
 
     try {
-
-      console.log(
-        'Priority API called'
-      )
-
 
       const complaints =
         await Complaint.find()
@@ -303,214 +315,34 @@ app.get(
 
 
       // ==================================
-      // C++ MAX HEAP ENGINE
+      // RANK USING MAX HEAP ENGINE
       // ==================================
 
-      const cppPath =
-        path.join(
-          __dirname,
-          '..',
-          'dsa',
-          'priority_engine.exe'
-        )
+      const rankedComplaints =
+        rankByPriority(complaints)
+          .map(complaint => ({
 
+            id: complaint.id,
+            title: complaint.title,
+            category: complaint.category,
+            severity: complaint.severity,
+            priority: complaint.priority,
+            location: complaint.location,
+            status: complaint.status,
+            createdAt: complaint.createdAt
 
-      console.log(
-        'Starting C++ Priority Engine:',
-        cppPath
-      )
+          }))
 
 
-      const cppProcess =
-        spawn(cppPath)
+      res.json({
 
+        message:
+          'Complaints ranked using Max Heap',
 
-      let output = ''
-      let errorOutput = ''
+        complaints:
+          rankedComplaints
 
-
-      cppProcess.on(
-        'error',
-        (error) => {
-
-          console.error(
-            'Could not start Priority Engine:',
-            error
-          )
-
-        }
-      )
-
-
-      // ==================================
-      // SEND DATA TO C++
-      // ==================================
-
-      for (
-        const complaint of complaints
-      ) {
-
-        const line =
-          `${complaint.id}|` +
-          `${complaint.title}|` +
-          `${complaint.category}|` +
-          `${complaint.severity}\n`
-
-
-        cppProcess.stdin.write(
-          line
-        )
-
-      }
-
-
-      cppProcess.stdin.end()
-
-
-      // ==================================
-      // RECEIVE C++ OUTPUT
-      // ==================================
-
-      cppProcess.stdout.on(
-        'data',
-        (data) => {
-
-          output +=
-            data.toString()
-
-        }
-      )
-
-
-      cppProcess.stderr.on(
-        'data',
-        (data) => {
-
-          errorOutput +=
-            data.toString()
-
-        }
-      )
-
-
-      // ==================================
-      // C++ FINISHED
-      // ==================================
-
-      cppProcess.on(
-        'close',
-        (code) => {
-
-          console.log(
-            'Priority engine finished:',
-            code
-          )
-
-
-          if (code !== 0) {
-
-            console.error(
-              'Priority Engine error:',
-              errorOutput
-            )
-
-
-            return res.status(500).json({
-
-              message:
-                'C++ Priority Engine failed.',
-
-              error:
-                errorOutput
-
-            })
-
-          }
-
-
-          const lines =
-            output
-              .trim()
-              .split('\n')
-              .filter(
-                line =>
-                  line.trim().length > 0
-              )
-
-
-          const rankedComplaints =
-            lines.map(
-              (line) => {
-
-                const [
-
-                  id,
-                  title,
-                  category,
-                  severity,
-                  priority
-
-                ] =
-                  line.split('|')
-
-
-                const originalComplaint =
-                  complaints.find(
-                    complaint =>
-                      complaint.id === id
-                  )
-
-
-                return {
-
-                  id:
-                    id || '',
-
-                  title:
-                    title || '',
-
-                  category:
-                    category || '',
-
-                  severity:
-                    severity || '',
-
-                  priority:
-                    Number(priority) || 0,
-
-                  location:
-                    originalComplaint
-                      ? originalComplaint.location
-                      : '',
-
-                  status:
-                    originalComplaint
-                      ? originalComplaint.status
-                      : 'Pending',
-
-                  createdAt:
-                    originalComplaint
-                      ? originalComplaint.createdAt
-                      : null
-
-                }
-
-              }
-            )
-
-
-          res.json({
-
-            message:
-              'Complaints ranked using C++ Max Heap',
-
-            complaints:
-              rankedComplaints
-
-          })
-
-        }
-      )
+      })
 
 
     } catch (error) {
@@ -539,7 +371,7 @@ app.get(
 
 // ======================================
 // COMPLAINT HISTORY
-// C++ LINKED LIST
+// LINKED LIST
 // ======================================
 
 app.get(
@@ -547,12 +379,6 @@ app.get(
   async (req, res) => {
 
     try {
-
-      console.log(
-        'History API called:',
-        req.params.id
-      )
-
 
       // ==================================
       // FIND COMPLAINT
@@ -694,179 +520,22 @@ app.get(
 
 
       // ==================================
-      // C++ LINKED LIST ENGINE
+      // BUILD HISTORY USING LINKED LIST ENGINE
       // ==================================
 
-      const cppPath =
-        path.join(
-          __dirname,
-          '..',
-          'dsa',
-          'history_engine.exe'
-        )
+      const historyResult =
+        buildHistoryTimeline(complaint.history)
 
 
-      console.log(
-        'Starting History Engine:',
-        cppPath
-      )
+      res.json({
 
+        message:
+          'Complaint history processed using Linked List',
 
-      const cppProcess =
-        spawn(cppPath)
+        history:
+          historyResult
 
-
-      let output = ''
-      let errorOutput = ''
-
-
-      cppProcess.on(
-        'error',
-        (error) => {
-
-          console.error(
-            'Could not start History Engine:',
-            error
-          )
-
-        }
-      )
-
-
-      // ==================================
-      // SEND HISTORY TO C++
-      // ==================================
-
-      for (
-        const item of complaint.history
-      ) {
-
-        const timestamp =
-          new Date(
-            item.timestamp
-          ).toISOString()
-
-
-        const line =
-          `${item.status}|` +
-          `${timestamp}|` +
-          `${item.description || ''}\n`
-
-
-        cppProcess.stdin.write(
-          line
-        )
-
-      }
-
-
-      cppProcess.stdin.end()
-
-
-      // ==================================
-      // RECEIVE C++ OUTPUT
-      // ==================================
-
-      cppProcess.stdout.on(
-        'data',
-        (data) => {
-
-          output +=
-            data.toString()
-
-        }
-      )
-
-
-      cppProcess.stderr.on(
-        'data',
-        (data) => {
-
-          errorOutput +=
-            data.toString()
-
-        }
-      )
-
-
-      // ==================================
-      // C++ FINISHED
-      // ==================================
-
-      cppProcess.on(
-        'close',
-        (code) => {
-
-          if (code !== 0) {
-
-            console.error(
-              'History Engine error:',
-              errorOutput
-            )
-
-
-            return res.status(500).json({
-
-              message:
-                'C++ History Engine failed.',
-
-              error:
-                errorOutput
-
-            })
-
-          }
-
-
-          const lines =
-            output
-              .trim()
-              .split('\n')
-              .filter(
-                line =>
-                  line.trim().length > 0
-              )
-
-
-          const historyResult =
-            lines.map(
-              (line) => {
-
-                const parts =
-                  line.split('|')
-
-
-                return {
-
-                  status:
-                    parts[0] || '',
-
-                  timestamp:
-                    parts[1] || '',
-
-                  description:
-                    parts
-                      .slice(2)
-                      .join('|') || ''
-
-                }
-
-              }
-            )
-
-
-          res.json({
-
-            message:
-              'Complaint history processed using C++ Linked List',
-
-            history:
-              historyResult
-
-          })
-
-        }
-      )
+      })
 
 
     } catch (error) {
@@ -895,7 +564,7 @@ app.get(
 
 // ======================================
 // COMPLAINT PROCESSING QUEUE
-// C++ FIFO QUEUE
+// FIFO QUEUE
 // ======================================
 
 app.get(
@@ -903,11 +572,6 @@ app.get(
   async (req, res) => {
 
     try {
-
-      console.log(
-        'Queue API called'
-      )
-
 
       // ==================================
       // GET UNRESOLVED COMPLAINTS
@@ -929,213 +593,34 @@ app.get(
 
 
       // ==================================
-      // C++ QUEUE ENGINE
+      // PROCESS USING FIFO QUEUE ENGINE
       // ==================================
 
-      const cppPath =
-        path.join(
-          __dirname,
-          '..',
-          'dsa',
-          'queue_engine.exe'
-        )
+      const queueComplaints =
+        processQueue(complaints)
+          .map((complaint, index) => ({
 
+            position: index + 1,
+            id: complaint.id,
+            title: complaint.title,
+            category: complaint.category,
+            severity: complaint.severity,
+            priority: complaint.priority,
+            status: complaint.status,
+            createdAt: complaint.createdAt
 
-      console.log(
-        'Starting C++ Queue Engine:',
-        cppPath
-      )
+          }))
 
 
-      const cppProcess =
-        spawn(cppPath)
+      res.json({
 
+        message:
+          'Complaints processed using FIFO Queue',
 
-      let output = ''
-      let errorOutput = ''
+        queue:
+          queueComplaints
 
-
-      cppProcess.on(
-        'error',
-        (error) => {
-
-          console.error(
-            'Could not start Queue Engine:',
-            error
-          )
-
-        }
-      )
-
-
-      // ==================================
-      // SEND COMPLAINTS TO C++
-      // ==================================
-
-      for (
-        const complaint of complaints
-      ) {
-
-        const line =
-          `${complaint.id}|` +
-          `${complaint.title}|` +
-          `${complaint.category}|` +
-          `${complaint.severity}\n`
-
-
-        cppProcess.stdin.write(
-          line
-        )
-
-      }
-
-
-      cppProcess.stdin.end()
-
-
-      // ==================================
-      // RECEIVE C++ OUTPUT
-      // ==================================
-
-      cppProcess.stdout.on(
-        'data',
-        (data) => {
-
-          output +=
-            data.toString()
-
-        }
-      )
-
-
-      cppProcess.stderr.on(
-        'data',
-        (data) => {
-
-          errorOutput +=
-            data.toString()
-
-        }
-      )
-
-
-      // ==================================
-      // C++ FINISHED
-      // ==================================
-
-      cppProcess.on(
-        'close',
-        (code) => {
-
-          console.log(
-            'Queue engine finished:',
-            code
-          )
-
-
-          if (code !== 0) {
-
-            console.error(
-              'Queue Engine error:',
-              errorOutput
-            )
-
-
-            return res.status(500).json({
-
-              message:
-                'C++ Queue Engine failed.',
-
-              error:
-                errorOutput
-
-            })
-
-          }
-
-
-          const lines =
-            output
-              .trim()
-              .split('\n')
-              .filter(
-                line =>
-                  line.trim().length > 0
-              )
-
-
-          const queueComplaints =
-            lines.map(
-              (line, index) => {
-
-                const [
-
-                  id,
-                  title,
-                  category,
-                  severity
-
-                ] =
-                  line.split('|')
-
-
-                const originalComplaint =
-                  complaints.find(
-                    complaint =>
-                      complaint.id === id
-                  )
-
-
-                return {
-
-                  position:
-                    index + 1,
-
-                  id:
-                    id || '',
-
-                  title:
-                    title || '',
-
-                  category:
-                    category || '',
-
-                  severity:
-                    severity || '',
-
-                  priority:
-                    originalComplaint
-                      ? originalComplaint.priority
-                      : 0,
-
-                  status:
-                    originalComplaint
-                      ? originalComplaint.status
-                      : 'Pending',
-
-                  createdAt:
-                    originalComplaint
-                      ? originalComplaint.createdAt
-                      : null
-
-                }
-
-              }
-            )
-
-
-          res.json({
-
-            message:
-              'Complaints processed using C++ FIFO Queue',
-
-            queue:
-              queueComplaints
-
-          })
-
-        }
-      )
+      })
 
 
     } catch (error) {
@@ -1283,12 +768,6 @@ app.post(
       // ==================================
 
       await complaint.save()
-
-
-      console.log(
-        'Complaint saved:',
-        complaint.id
-      )
 
 
       res.status(201).json({
@@ -1463,13 +942,6 @@ app.put(
       await complaint.save()
 
 
-      console.log(
-
-        `Complaint ${complaint.id} status updated to ${status}`
-
-      )
-
-
       res.json({
 
         message:
@@ -1514,12 +986,6 @@ app.get(
   async (req, res) => {
 
     try {
-
-      console.log(
-        'Searching complaint:',
-        req.params.id
-      )
-
 
       // ==================================
       // FIND COMPLAINT

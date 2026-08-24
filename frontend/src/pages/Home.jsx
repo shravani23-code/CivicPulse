@@ -11,6 +11,7 @@ import {
 import '../App.css'
 import SmartCity3D from '../components/SmartCity3D'
 import { useCountUp } from '../hooks/useCountUp'
+import { API_BASE_URL } from '../config/api'
 
 const NAV_SECTIONS = ['home', 'features', 'how-it-works', 'about']
 
@@ -100,7 +101,7 @@ function Home() {
 
         const response =
           await fetch(
-            'https://civicpulse-backend-nt8q.onrender.com/api/complaints/stats'
+            `${API_BASE_URL}/api/complaints/stats`
           )
 
 

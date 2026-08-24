@@ -13,6 +13,7 @@ import {
   CheckCircle2
 } from 'lucide-react'
 import '../App.css'
+import { API_BASE_URL } from '../config/api'
 
 const CATEGORIES = [
   { value: 'Road', label: 'Road / Pothole', icon: Construction },
@@ -185,7 +186,7 @@ function ReportComplaint() {
     try {
 
       const response = await fetch(
-        'https://civicpulse-backend-nt8q.onrender.com/api/complaints',
+        `${API_BASE_URL}/api/complaints`,
         {
           method: 'POST',
 
@@ -242,7 +243,7 @@ function ReportComplaint() {
       )
 
       setError(
-        'Unable to connect to CivicPulse server. Make sure the backend is running on port 5000.'
+        'Unable to connect to CivicPulse server. Please check your internet connection and try again.'
       )
 
     } finally {

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { motion } from 'framer-motion'
 import { Link2 } from 'lucide-react'
 import '../App.css'
+import { API_BASE_URL } from '../config/api'
 
 const containerVariants = {
   hidden: {},
@@ -20,16 +21,13 @@ const itemVariants = {
 }
 
 function TrackComplaint() {
-
   const [complaintId, setComplaintId] = useState('')
   const [complaint, setComplaint] = useState(null)
   const [history, setHistory] = useState([])
   const [error, setError] = useState('')
   const [isSearching, setIsSearching] = useState(false)
 
-
   async function handleSearch(event) {
-
     event.preventDefault()
 
     setError('')
@@ -39,164 +37,99 @@ function TrackComplaint() {
     const id = complaintId.trim()
 
     if (!id) {
-
-      setError(
-        'Please enter a Complaint ID.'
-      )
-
+      setError('Please enter a Complaint ID.')
       return
     }
 
-
     setIsSearching(true)
 
-
     try {
-
       // ==================================
       // GET COMPLAINT
       // ==================================
 
-      const complaintResponse =
-        await fetch(
-          `http://https://civicpulse-backend-nt8q.onrender.com/api/complaints/${id}`
-        )
-
-
-      const complaintData =
-        await complaintResponse.json()
-
-
-      if (!complaintResponse.ok) {
-
-        throw new Error(
-          complaintData.message ||
-          'Complaint not found.'
-        )
-
-      }
-
-
-      setComplaint(
-        complaintData
+      const complaintResponse = await fetch(
+        `${API_BASE_URL}/api/complaints/${id}`
       )
 
+      const complaintData = await complaintResponse.json()
 
-      // ==================================
-      // GET HISTORY FROM C++ LINKED LIST
-      // ==================================
-
-      const historyResponse =
-        await fetch(
-          `http://https://civicpulse-backend-nt8q.onrender.com/api/complaints/${id}/history`
-        )
-
-
-      const historyData =
-        await historyResponse.json()
-
-
-      if (!historyResponse.ok) {
-
+      if (!complaintResponse.ok) {
         throw new Error(
-          historyData.message ||
-          'Failed to fetch complaint history.'
+          complaintData.message || 'Complaint not found.'
         )
-
       }
 
+      // Show complaint details
+      setComplaint(complaintData)
+
+      // ==================================
+      // GET COMPLAINT HISTORY
+      // ==================================
+
+      const historyResponse = await fetch(
+        `${API_BASE_URL}/api/complaints/${id}/history`
+      )
+
+      const historyData = await historyResponse.json()
+
+      if (!historyResponse.ok) {
+        throw new Error(
+          historyData.message ||
+            'Failed to fetch complaint history.'
+        )
+      }
 
       console.log(
-        'History received from C++ Linked List:',
+        'History received from Linked List:',
         historyData
       )
 
-
-      setHistory(
-        historyData.history || []
-      )
-
+      setHistory(historyData.history || [])
 
     } catch (error) {
-
-      console.error(
-        'Tracking error:',
-        error
-      )
-
+      console.error('Tracking error:', error)
 
       setError(
         error.message ||
-        'Unable to connect to CivicPulse server.'
+          'Unable to connect to CivicPulse server.'
       )
-
 
       setComplaint(null)
       setHistory([])
-
-
     } finally {
-
       setIsSearching(false)
-
     }
-
   }
-
 
   // ======================================
   // STATUS HELPERS
   // ======================================
 
   function statusToClass(status) {
-
     if (status === 'Resolved') return 'resolved'
     if (status === 'In Progress') return 'in-progress'
 
     return 'pending'
-
   }
 
-
-  function getStatusIcon(
-    status,
-    index
-  ) {
-
-    if (
-      status === 'Resolved'
-    ) {
-
+  function getStatusIcon(status, index) {
+    if (status === 'Resolved') {
       return '✓'
-
     }
 
-
-    if (
-      status === 'In Progress'
-    ) {
-
+    if (status === 'In Progress') {
       return '→'
-
     }
 
-
-    if (
-      index === 0
-    ) {
-
+    if (index === 0) {
       return '✓'
-
     }
-
 
     return index + 1
-
   }
 
-
   return (
-
     <div className="track-page">
 
       {/* ==================================
@@ -212,16 +145,13 @@ function TrackComplaint() {
           ← Back to CivicPulse
         </a>
 
-
         <p className="hero-label">
           COMPLAINT TRACKING
         </p>
 
-
         <h1>
           Track Your <span>Complaint</span>
         </h1>
-
 
         <p>
           Enter your Complaint ID to check the current status.
@@ -229,21 +159,17 @@ function TrackComplaint() {
 
       </div>
 
-
       {/* ==================================
           SEARCH CARD
       ================================== */}
 
       <div className="track-card">
 
-        <form
-          onSubmit={handleSearch}
-        >
+        <form onSubmit={handleSearch}>
 
           <label>
             Complaint ID
           </label>
-
 
           <div className="track-input-row">
 
@@ -252,42 +178,33 @@ function TrackComplaint() {
               placeholder="Example: CP12345678"
               value={complaintId}
               onChange={(event) =>
-                setComplaintId(
-                  event.target.value
-                )
+                setComplaintId(event.target.value)
               }
             />
-
 
             <button
               type="submit"
               className="submit-button"
               disabled={isSearching}
             >
-
               {isSearching
                 ? 'Searching...'
                 : 'Track Complaint'}
-
             </button>
 
           </div>
 
         </form>
 
-
         {/* ==================================
             ERROR
         ================================== */}
 
         {error && (
-
           <div className="track-error">
             {error}
           </div>
-
         )}
-
 
         {/* ==================================
             COMPLAINT RESULT
@@ -304,7 +221,10 @@ function TrackComplaint() {
 
             {/* Result Header */}
 
-            <motion.div className="result-header" variants={itemVariants}>
+            <motion.div
+              className="result-header"
+              variants={itemVariants}
+            >
 
               <div>
 
@@ -312,26 +232,30 @@ function TrackComplaint() {
                   COMPLAINT FOUND
                 </p>
 
-
                 <h2>
                   {complaint.id}
                 </h2>
 
               </div>
 
-
-              <span className={`status-badge ${statusToClass(complaint.status)}`}>
+              <span
+                className={`status-badge ${statusToClass(
+                  complaint.status
+                )}`}
+              >
                 {complaint.status}
               </span>
 
             </motion.div>
 
-
             {/* ==================================
                 COMPLAINT DETAILS
             ================================== */}
 
-            <motion.div className="result-grid" variants={itemVariants}>
+            <motion.div
+              className="result-grid"
+              variants={itemVariants}
+            >
 
               <div className="result-item">
 
@@ -345,7 +269,6 @@ function TrackComplaint() {
 
               </div>
 
-
               <div className="result-item">
 
                 <span>
@@ -357,7 +280,6 @@ function TrackComplaint() {
                 </strong>
 
               </div>
-
 
               <div className="result-item">
 
@@ -371,7 +293,6 @@ function TrackComplaint() {
 
               </div>
 
-
               <div className="result-item">
 
                 <span>
@@ -383,7 +304,6 @@ function TrackComplaint() {
                 </strong>
 
               </div>
-
 
               <div className="result-item">
 
@@ -397,7 +317,6 @@ function TrackComplaint() {
 
               </div>
 
-
               <div className="result-item">
 
                 <span>
@@ -405,25 +324,25 @@ function TrackComplaint() {
                 </span>
 
                 <strong>
-
                   {complaint.createdAt
                     ? new Date(
                         complaint.createdAt
                       ).toLocaleDateString()
                     : 'Not available'}
-
                 </strong>
 
               </div>
 
             </motion.div>
 
-
             {/* ==================================
                 DESCRIPTION
             ================================== */}
 
-            <motion.div className="submitted-description" variants={itemVariants}>
+            <motion.div
+              className="submitted-description"
+              variants={itemVariants}
+            >
 
               <span>
                 Description
@@ -435,20 +354,31 @@ function TrackComplaint() {
 
             </motion.div>
 
-
             {/* ==================================
                 LINKED LIST HISTORY
             ================================== */}
 
-            <motion.div className="status-section" variants={itemVariants}>
+            <motion.div
+              className="status-section"
+              variants={itemVariants}
+            >
 
               <div className="history-heading">
 
                 <div>
 
                   <p className="result-label">
-                    <Link2 size={12} style={{ verticalAlign: '-1px', marginRight: '5px' }} />
+
+                    <Link2
+                      size={12}
+                      style={{
+                        verticalAlign: '-1px',
+                        marginRight: '5px'
+                      }}
+                    />
+
                     COMPLAINT HISTORY
+
                   </p>
 
                   <h3>
@@ -457,16 +387,17 @@ function TrackComplaint() {
 
                 </div>
 
-
                 <span className="history-count">
+
                   {history.length}{' '}
+
                   {history.length === 1
                     ? 'update'
                     : 'updates'}
+
                 </span>
 
               </div>
-
 
               {history.length === 0 ? (
 
@@ -481,16 +412,26 @@ function TrackComplaint() {
                   {history.map(
                     (item, index) => {
 
-                      const isCurrent = index === history.length - 1
+                      const isCurrent =
+                        index === history.length - 1
 
                       return (
 
                         <motion.div
                           className="history-item"
                           key={`${item.status}-${index}`}
-                          initial={{ opacity: 0, x: -12 }}
-                          animate={{ opacity: 1, x: 0 }}
-                          transition={{ duration: 0.35, delay: index * 0.1 }}
+                          initial={{
+                            opacity: 0,
+                            x: -12
+                          }}
+                          animate={{
+                            opacity: 1,
+                            x: 0
+                          }}
+                          transition={{
+                            duration: 0.35,
+                            delay: index * 0.1
+                          }}
                         >
 
                           {index < history.length - 1 && (
@@ -498,7 +439,13 @@ function TrackComplaint() {
                           )}
 
                           <div
-                            className={`history-node ${statusToClass(item.status)}${isCurrent ? ' current' : ''}`}
+                            className={`history-node ${statusToClass(
+                              item.status
+                            )}${
+                              isCurrent
+                                ? ' current'
+                                : ''
+                            }`}
                           >
 
                             {getStatusIcon(
@@ -507,7 +454,6 @@ function TrackComplaint() {
                             )}
 
                           </div>
-
 
                           <div className="history-content">
 
@@ -528,7 +474,6 @@ function TrackComplaint() {
                               </span>
 
                             </div>
-
 
                             <p>
                               {item.description}
@@ -555,9 +500,7 @@ function TrackComplaint() {
       </div>
 
     </div>
-
   )
-
 }
 
 export default TrackComplaint
