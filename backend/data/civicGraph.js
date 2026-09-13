@@ -16,29 +16,35 @@ const AVERAGE_SPEED_KMH = 30
 // The civic areas that actually exist as graph nodes. resolveLocationToNode
 // below will NEVER return anything outside this list — adding a locality
 // to LOCATION_ALIASES without adding it here (and to EDGES) does nothing.
+//
+// These are the localities that actually show up in CivicPulse's complaint
+// data (Pimpri-Chinchwad / Pune area) rather than placeholder ward names —
+// see LOCATION_ALIASES below for exactly which raw complaint strings map
+// to each one.
 const NODE_IDS = [
   'Municipal Office',
-  'Ward 1',
-  'Ward 2',
-  'Central Market',
-  'Ward 4',
-  'Ward 5',
-  'Karvenagar',
-  'Charholi'
+  'Akurdi',
+  'Nigdi',
+  'Pimpri',
+  'Moshi',
+  'Charholi',
+  'Shivajinagar',
+  'Karvenagar'
 ]
 
-// [fromId, toId, distanceKm] — undirected roads between areas.
+// [fromId, toId, distanceKm] — undirected roads between areas. These are
+// modeled/simulated distances for the demo civic network, not measured
+// real-world road distances.
 const EDGES = [
-  ['Municipal Office', 'Ward 1', 2],
-  ['Municipal Office', 'Ward 2', 3],
-  ['Ward 1', 'Ward 4', 4],
-  ['Ward 1', 'Charholi', 5],
-  ['Ward 2', 'Central Market', 2],
-  ['Central Market', 'Ward 4', 2],
-  ['Central Market', 'Ward 5', 3],
-  ['Ward 4', 'Ward 5', 2],
-  ['Ward 4', 'Karvenagar', 3],
-  ['Ward 5', 'Karvenagar', 2]
+  ['Municipal Office', 'Akurdi', 3],
+  ['Municipal Office', 'Shivajinagar', 8],
+  ['Akurdi', 'Nigdi', 2],
+  ['Akurdi', 'Pimpri', 3],
+  ['Nigdi', 'Pimpri', 2],
+  ['Nigdi', 'Moshi', 4],
+  ['Pimpri', 'Moshi', 5],
+  ['Moshi', 'Charholi', 3],
+  ['Shivajinagar', 'Karvenagar', 6]
 ]
 
 // Response dispatch points. There is exactly one today (the municipal
@@ -56,36 +62,45 @@ const RESPONSE_SOURCES = [
 // (see the check below) so a typo here fails loudly instead of silently
 // never matching. Extend this list as real localities come up — do not
 // add a phrase without also making sure its target node genuinely exists.
+//
+// Deliberately excluded: "pccoe" (Pimpri Chinchwad College of Engineering)
+// sits right on the Akurdi/Nigdi boundary and shows up in real complaints
+// tied to both ("Near PCCOE, Nigdi" and "Pccoe akurdi") — mapping it to
+// either node would be a guess, not a match, so it's left unmapped and
+// resolution instead relies on the explicit locality name that's always
+// present alongside it. Same reasoning kept "sainath society" OUT of this
+// map: it names a society that exists in more than one locality in real
+// complaint data ("sainath society,charholi" vs "Sainath Society ,
+// Shivajinagar") — aliasing it to one would have silently misrouted the
+// other, so only the unambiguous locality name after it is matched.
 const LOCATION_ALIASES = {
   'municipal office': 'Municipal Office',
   'corporation office': 'Municipal Office',
   'city hall': 'Municipal Office',
   'ward office': 'Municipal Office',
 
-  'ward 1': 'Ward 1',
-  'ward no 1': 'Ward 1',
+  'akurdi': 'Akurdi',
+  'akurdi railway station': 'Akurdi',
 
-  'ward 2': 'Ward 2',
-  'ward no 2': 'Ward 2',
+  'nigdi': 'Nigdi',
+  'nigdi pradhikaran': 'Nigdi',
 
-  'central market': 'Central Market',
-  'main bazaar': 'Central Market',
-  'market road': 'Central Market',
-  'market yard': 'Central Market',
+  'pimpri': 'Pimpri',
+  'pimpri market': 'Pimpri',
 
-  'ward 4': 'Ward 4',
-  'ward no 4': 'Ward 4',
-
-  'ward 5': 'Ward 5',
-  'ward no 5': 'Ward 5',
-
-  'karvenagar': 'Karvenagar',
-  'karve nagar': 'Karvenagar',
+  'moshi': 'Moshi',
+  'santnagar': 'Moshi',
+  'sant nagar': 'Moshi',
+  'sai residency': 'Moshi',
 
   'charholi': 'Charholi',
   'charholi gaon': 'Charholi',
   'charholi phata': 'Charholi',
-  'sainath society': 'Charholi'
+
+  'shivajinagar': 'Shivajinagar',
+
+  'karvenagar': 'Karvenagar',
+  'karve nagar': 'Karvenagar'
 }
 
 for (const [alias, nodeId] of Object.entries(LOCATION_ALIASES)) {

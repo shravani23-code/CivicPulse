@@ -270,7 +270,7 @@ function ComplaintDetailsModal({ complaint, onClose, isAdmin = false, onStatusCh
                   ) : (
 
                     <div className="response-status-item pending">
-                      → Response time will be shared once the location is confirmed
+                      Response time is currently unavailable for this location.
                     </div>
 
                   )}
