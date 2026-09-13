@@ -11,6 +11,52 @@ const {
   buildHistoryTimeline,
   processQueue
 } = require('../dsaEngines')
+const { bfsWithinHops } = require('../services/graphEngine')
+const {
+  civicGraph,
+  AVERAGE_SPEED_KMH,
+  resolveLocationToNode,
+  findBestResponse,
+  getGraphSnapshot
+} = require('../data/civicGraph')
+
+// High/Critical complaints also get a BFS sweep of nearby areas worth
+// inspecting; Medium/Low complaints just get the route.
+const BFS_INSPECTION_SEVERITIES = ['High', 'Critical']
+const BFS_INSPECTION_HOPS = 2
+
+// Shared by both /:id/route (admin) and /:id/response-status (citizen) —
+// resolves the complaint's location on the civic graph and runs Dijkstra
+// from the best available response source. Returns null when no honest
+// route can be produced (unrecognized location, or a disconnected graph
+// component) instead of ever guessing one.
+function computeResponse(complaint) {
+
+  const destinationNode = resolveLocationToNode(complaint.location)
+
+  if (!destinationNode) return null
+
+  const best = findBestResponse(destinationNode)
+
+  if (!best) return null
+
+  const etaMinutes = Math.round((best.distance / AVERAGE_SPEED_KMH) * 60)
+
+  const nearbyAreas = BFS_INSPECTION_SEVERITIES.includes(complaint.severity)
+    ? bfsWithinHops(civicGraph, destinationNode, BFS_INSPECTION_HOPS)
+    : []
+
+  return {
+    source: best.source,
+    destination: destinationNode,
+    path: best.path,
+    distanceKm: best.distance,
+    etaMinutes,
+    nearbyAreas,
+    algorithm: 'Dijkstra'
+  }
+
+}
 
 const router = express.Router()
 
@@ -408,6 +454,93 @@ router.get('/:id/history', validateComplaintIdFormat, async (req, res) => {
     console.error('History integration error:', error)
 
     res.status(500).json({ message: 'Failed to process complaint history.', error: error.message })
+
+  }
+
+})
+
+
+// ======================================
+// RESPONSE ROUTE — DIJKSTRA SHORTEST PATH (admin only)
+//
+// Full technical detail for the admin's "Response Route" panel: the
+// resolved source/destination, the Dijkstra path, distance/ETA, BFS
+// nearby-inspection areas, and a snapshot of the graph itself so the
+// frontend can draw the real network instead of a hand-drawn diagram.
+// ======================================
+
+router.get('/:id/route', requireAuth, requireRole('admin'), validateComplaintIdFormat, async (req, res) => {
+
+  try {
+
+    const complaint = await Complaint.findOne({ id: req.params.id })
+
+    if (!complaint) {
+      return res.status(404).json({ message: 'Complaint not found.' })
+    }
+
+    const response = computeResponse(complaint)
+
+    if (!response) {
+
+      return res.json({
+        message: 'Route unavailable for this location.',
+        route: null,
+        graph: getGraphSnapshot()
+      })
+
+    }
+
+    res.json({
+      message: 'Route calculated using Dijkstra shortest path',
+      route: response,
+      graph: getGraphSnapshot()
+    })
+
+  } catch (error) {
+
+    console.error('Route calculation error:', error)
+
+    res.status(500).json({ message: 'Failed to calculate response route.', error: error.message })
+
+  }
+
+})
+
+
+// ======================================
+// RESPONSE STATUS (citizen-facing — no graph/route internals)
+//
+// Same Dijkstra/BFS computation as /:id/route, but the response is
+// reduced to what a citizen actually needs: is a response route
+// available, how far, how soon. No node names, no path, no algorithm
+// terminology — the graph stays entirely behind the scenes here.
+// ======================================
+
+router.get('/:id/response-status', validateComplaintIdFormat, async (req, res) => {
+
+  try {
+
+    const complaint = await Complaint.findOne({ id: req.params.id })
+
+    if (!complaint) {
+      return res.status(404).json({ message: 'Complaint not found.' })
+    }
+
+    const response = computeResponse(complaint)
+
+    res.json({
+      message: 'Response status calculated',
+      status: response
+        ? { available: true, distanceKm: response.distanceKm, etaMinutes: response.etaMinutes }
+        : { available: false }
+    })
+
+  } catch (error) {
+
+    console.error('Response status error:', error)
+
+    res.status(500).json({ message: 'Failed to calculate response status.', error: error.message })
 
   }
 

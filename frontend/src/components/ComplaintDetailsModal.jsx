@@ -1,8 +1,12 @@
+import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { X } from 'lucide-react'
 import CopyButton from './CopyButton'
 import ImageGallery from './ImageGallery'
 import LocationMap from './LocationMap'
+import RouteGraph from './RouteGraph'
+import { API_BASE_URL } from '../config/api'
+import { useAuth } from '../auth/useAuthContext'
 
 function statusToClass(status) {
   if (status === 'Resolved') return 'resolved'
@@ -16,6 +20,45 @@ function statusToClass(status) {
 // complaint don't need to see their own contact details repeated back,
 // and never see anyone else's.
 function ComplaintDetailsModal({ complaint, onClose, isAdmin = false, onStatusChange, updating = false }) {
+
+  const { token } = useAuth()
+
+  // Admin gets the full Dijkstra/BFS breakdown plus the graph to draw;
+  // citizens get a reduced response-status summary with no graph/route
+  // internals (see the two backend endpoints in complaintRoutes.js).
+  const [routeInfo, setRouteInfo] = useState(null)
+  const [responseStatus, setResponseStatus] = useState(null)
+
+  useEffect(() => {
+
+    if (!complaint) return
+
+    let cancelled = false
+
+    const endpoint = isAdmin
+      ? `${API_BASE_URL}/api/complaints/${complaint.id}/route`
+      : `${API_BASE_URL}/api/complaints/${complaint.id}/response-status`
+
+    fetch(endpoint, {
+      headers: isAdmin ? { Authorization: `Bearer ${token}` } : {}
+    })
+      .then(response => response.json())
+      .then(data => {
+        if (cancelled) return
+        if (isAdmin) setRouteInfo({ route: data.route || null, graph: data.graph || null })
+        else setResponseStatus(data.status || null)
+      })
+      .catch(() => {
+        if (cancelled) return
+        if (isAdmin) setRouteInfo(null)
+        else setResponseStatus(null)
+      })
+
+    return () => {
+      cancelled = true
+    }
+
+  }, [isAdmin, complaint?.id, token])
 
   if (!complaint) return null
 
@@ -134,6 +177,105 @@ function ComplaintDetailsModal({ complaint, onClose, isAdmin = false, onStatusCh
                   <option value="In Progress">In Progress</option>
                   <option value="Resolved">Resolved</option>
                 </select>
+
+              </div>
+
+            )}
+
+            {isAdmin && routeInfo && (
+
+              <div className="modal-section">
+                <span className="modal-section-label">Response Route</span>
+
+                {routeInfo.route ? (
+
+                  <>
+
+                    <RouteGraph
+                      graph={routeInfo.graph}
+                      path={routeInfo.route.path}
+                      source={routeInfo.route.source}
+                      destination={routeInfo.route.destination}
+                    />
+
+                    <div className="result-grid">
+
+                      <div className="result-item">
+                        <span>Response Source</span>
+                        <strong>{routeInfo.route.source}</strong>
+                      </div>
+
+                      <div className="result-item">
+                        <span>Destination</span>
+                        <strong>{routeInfo.route.destination}</strong>
+                      </div>
+
+                      <div className="result-item">
+                        <span>Shortest Route</span>
+                        <strong>{routeInfo.route.path.join(' → ')}</strong>
+                      </div>
+
+                      <div className="result-item">
+                        <span>Distance</span>
+                        <strong>{routeInfo.route.distanceKm} km</strong>
+                      </div>
+
+                      <div className="result-item">
+                        <span>Estimated Response</span>
+                        <strong>~{routeInfo.route.etaMinutes} min</strong>
+                      </div>
+
+                      {routeInfo.route.nearbyAreas.length > 0 && (
+                        <div className="result-item">
+                          <span>Nearby Areas to Inspect</span>
+                          <strong>{routeInfo.route.nearbyAreas.join(', ')}</strong>
+                        </div>
+                      )}
+
+                    </div>
+
+                  </>
+
+                ) : (
+
+                  <p className="route-unavailable">
+                    Response route currently unavailable for this location.
+                  </p>
+
+                )}
+
+              </div>
+
+            )}
+
+            {!isAdmin && responseStatus && (
+
+              <div className="modal-section">
+                <span className="modal-section-label">Response Status</span>
+
+                <div className="response-status-list">
+
+                  <div className="response-status-item">✓ Complaint received</div>
+
+                  {responseStatus.available ? (
+
+                    <>
+                      <div className="response-status-item">✓ Location identified</div>
+                      <div className="response-status-item">✓ Response team assigned</div>
+                      <div className="response-status-eta">
+                        → Estimated arrival: ~{responseStatus.etaMinutes} min ({responseStatus.distanceKm} km away)
+                      </div>
+                    </>
+
+                  ) : (
+
+                    <div className="response-status-item pending">
+                      → Response time will be shared once the location is confirmed
+                    </div>
+
+                  )}
+
+                </div>
 
               </div>
 

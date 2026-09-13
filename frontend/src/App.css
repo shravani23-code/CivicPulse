@@ -2966,6 +2966,70 @@ a {
   color: #59615b;
 }
 
+.route-graph {
+  border: 1px solid #e5ebe7;
+  border-radius: 12px;
+  padding: 14px 12px 10px;
+  background: #fbfcfb;
+  margin-bottom: 14px;
+}
+
+.route-graph-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #eef1ec;
+}
+
+.route-graph-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #737b75;
+}
+
+.route-graph-legend i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.route-unavailable {
+  font-size: 13px;
+  color: #a13c2d;
+  background: #fbe0dc;
+  border-radius: 10px;
+  padding: 10px 14px;
+}
+
+.response-status-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.response-status-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13.5px;
+  color: #263129;
+}
+
+.response-status-item.pending {
+  color: #8a9189;
+}
+
+.response-status-eta {
+  margin-top: 4px;
+  font-weight: 700;
+  color: #3f7d58;
+}
+
 @media (max-width: 650px) {
 
   .complaint-modal {
