@@ -45,8 +45,16 @@ function ComplaintDetailsModal({ complaint, onClose, isAdmin = false, onStatusCh
       .then(response => response.json())
       .then(data => {
         if (cancelled) return
-        if (isAdmin) setRouteInfo({ route: data.route || null, graph: data.graph || null })
-        else setResponseStatus(data.status || null)
+        if (isAdmin) {
+          setRouteInfo({
+            route: data.route || null,
+            graph: data.graph || null,
+            nextPriority: data.nextPriority || null,
+            alongRoute: data.alongRoute || []
+          })
+        } else {
+          setResponseStatus(data.status || null)
+        }
       })
       .catch(() => {
         if (cancelled) return
@@ -196,12 +204,14 @@ function ComplaintDetailsModal({ complaint, onClose, isAdmin = false, onStatusCh
                       path={routeInfo.route.path}
                       source={routeInfo.route.source}
                       destination={routeInfo.route.destination}
+                      alongRoute={routeInfo.alongRoute}
+                      nextPriority={routeInfo.nextPriority}
                     />
 
                     <div className="result-grid">
 
                       <div className="result-item">
-                        <span>Response Source</span>
+                        <span>Current Response Source</span>
                         <strong>{routeInfo.route.source}</strong>
                       </div>
 
@@ -234,6 +244,62 @@ function ComplaintDetailsModal({ complaint, onClose, isAdmin = false, onStatusCh
 
                     </div>
 
+                    {routeInfo.nextPriority && (
+
+                      <div className="response-subsection">
+
+                        <span className="response-subsection-label">Next Priority Complaint</span>
+
+                        <div className="along-route-item">
+                          <div className="along-route-item-head">
+                            <strong>{routeInfo.nextPriority.id}</strong>
+                            <span className={`severity-badge ${routeInfo.nextPriority.severity.toLowerCase()}`}>
+                              {routeInfo.nextPriority.severity}
+                            </span>
+                          </div>
+                          <div className="along-route-item-meta">
+                            {routeInfo.nextPriority.category} · Priority {routeInfo.nextPriority.priority} · {routeInfo.nextPriority.location}
+                          </div>
+                        </div>
+
+                      </div>
+
+                    )}
+
+                    {routeInfo.alongRoute.length > 0 && (
+
+                      <div className="response-subsection">
+
+                        <span className="response-subsection-label">Along-Route Complaints</span>
+
+                        <p className="along-route-note">
+                          {routeInfo.alongRoute.length} complaint{routeInfo.alongRoute.length === 1 ? '' : 's'} detected along this response route. These do not change priority.
+                        </p>
+
+                        <div className="along-route-list">
+
+                          {routeInfo.alongRoute.map(item => (
+
+                            <div className="along-route-item" key={item.id}>
+                              <div className="along-route-item-head">
+                                <strong>{item.id}</strong>
+                                <span className={`severity-badge ${item.severity.toLowerCase()}`}>
+                                  {item.severity}
+                                </span>
+                              </div>
+                              <div className="along-route-item-meta">
+                                {item.category} · Priority {item.priority} · {item.location}
+                              </div>
+                            </div>
+
+                          ))}
+
+                        </div>
+
+                      </div>
+
+                    )}
+
                   </>
 
                 ) : (
@@ -256,6 +322,7 @@ function ComplaintDetailsModal({ complaint, onClose, isAdmin = false, onStatusCh
                 <div className="response-status-list">
 
                   <div className="response-status-item">✓ Complaint received</div>
+                  <div className="response-status-item">Your complaint is currently in the response queue.</div>
 
                   {responseStatus.available ? (
 

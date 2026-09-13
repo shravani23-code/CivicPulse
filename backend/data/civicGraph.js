@@ -35,6 +35,17 @@ const NODE_IDS = [
 // [fromId, toId, distanceKm] — undirected roads between areas. These are
 // modeled/simulated distances for the demo civic network, not measured
 // real-world road distances.
+//
+// Extensibility note (no traffic feature exists yet — this is only about
+// keeping the door open for one): each edge here is a plain distance
+// weight, but Dijkstra in graphEngine.js just takes whatever numeric
+// `weight` an edge carries — it has no idea it's "distance". A future
+// "fastest route" mode could store additional per-edge fields here (e.g.
+// trafficLevel, travelTimeMinutes, roadCondition) and build a second
+// Graph weighted by travel time instead of distance, without touching
+// Dijkstra, BFS, or DFS at all. Anything computed that way must be
+// labeled "Modeled Traffic", never "Live Traffic", unless a real traffic
+// feed is actually wired in.
 const EDGES = [
   ['Municipal Office', 'Akurdi', 3],
   ['Municipal Office', 'Shivajinagar', 8],
@@ -46,6 +57,36 @@ const EDGES = [
   ['Moshi', 'Charholi', 3],
   ['Shivajinagar', 'Karvenagar', 6]
 ]
+
+// Approximate public locality reference points (Pimpri-Chinchwad / Pune
+// area), used ONLY to give the response route a real-world polyline for
+// route-corridor geometry (see buildRoutePolyline + ROUTE_CORRIDOR_METERS
+// below). These are not surveyed road coordinates and the route between
+// them is a straight line, not an actual driving path — good enough to
+// tell "an unresolved complaint's real GPS is ~80 m from this route" from
+// "it's 4 km away", not to render a real map. Never used as a substitute
+// for a complaint's own GPS coordinates (see LocationMap.jsx for that).
+const NODE_COORDINATES = {
+  'Municipal Office': { lat: 18.6270, lon: 73.8060 },
+  'Akurdi': { lat: 18.6486, lon: 73.7666 },
+  'Nigdi': { lat: 18.6482, lon: 73.7639 },
+  'Pimpri': { lat: 18.6298, lon: 73.8131 },
+  'Moshi': { lat: 18.6737, lon: 73.8388 },
+  'Charholi': { lat: 18.6790, lon: 73.8280 },
+  'Shivajinagar': { lat: 18.5308, lon: 73.8478 },
+  'Karvenagar': { lat: 18.4875, lon: 73.8079 }
+}
+
+for (const id of NODE_IDS) {
+  if (!NODE_COORDINATES[id]) {
+    throw new Error(`civicGraph: NODE_COORDINATES is missing an entry for "${id}".`)
+  }
+}
+
+// A complaint's real GPS within this distance of the computed response
+// route is flagged "along route" — see complaintRoutes.js. Deliberately
+// tight: this is "practically on the way", not "same general area".
+const ROUTE_CORRIDOR_METERS = 150
 
 // Response dispatch points. There is exactly one today (the municipal
 // office — CivicPulse has no live worker-location tracking yet), but every
@@ -243,11 +284,22 @@ function getGraphSnapshot() {
 
 }
 
+// Turns a Dijkstra path (list of node IDs) into the ordered list of
+// {lat, lon} points route-corridor detection measures other complaints'
+// real GPS against — see geoEngine.js's distanceToRouteMeters.
+function buildRoutePolyline(path) {
+
+  return path.map(nodeId => NODE_COORDINATES[nodeId])
+
+}
+
 module.exports = {
   civicGraph,
   RESPONSE_SOURCES,
   AVERAGE_SPEED_KMH,
+  ROUTE_CORRIDOR_METERS,
   resolveLocationToNode,
   findBestResponse,
-  getGraphSnapshot
+  getGraphSnapshot,
+  buildRoutePolyline
 }

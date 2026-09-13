@@ -92,7 +92,61 @@ function isPathEdge(edge, path) {
 
 }
 
-function RouteGraph({ graph, path, source, destination }) {
+const MARKER_SIZE = 9
+const MARKER_GAP = 13
+
+const ALONG_ROUTE_COLOR = '#3b6ea5'
+const NEXT_PRIORITY_COLOR = '#cf7a39'
+
+function markerTooltip(item) {
+  return `${item.id} — ${item.category} — ${item.severity} — Priority ${item.priority} — ${item.status} — ${item.location}`
+}
+
+// Small offset badges for complaints that aren't the current source/target
+// but are still operationally relevant (along-route or next-priority).
+// Several can land on the same node (e.g. two along-route complaints in
+// the same locality) — stacked upward so they don't overlap.
+function OperationalMarkers({ nodeId, positions, alongRoute, nextPriority }) {
+
+  const pos = positions.get(nodeId)
+  if (!pos) return null
+
+  const markers = []
+
+  if (nextPriority && nextPriority.node === nodeId) {
+    markers.push({ color: NEXT_PRIORITY_COLOR, item: nextPriority })
+  }
+
+  for (const item of alongRoute) {
+    if (item.node === nodeId) {
+      markers.push({ color: ALONG_ROUTE_COLOR, item })
+    }
+  }
+
+  return markers.map((marker, index) => {
+
+    const x = pos.x + NODE_RADIUS - 2
+    const y = pos.y - NODE_RADIUS - 4 - index * MARKER_GAP
+
+    return (
+      <rect
+        key={`${nodeId}-${marker.item.id}`}
+        x={x}
+        y={y}
+        width={MARKER_SIZE}
+        height={MARKER_SIZE}
+        rx={2}
+        fill={marker.color}
+      >
+        <title>{markerTooltip(marker.item)}</title>
+      </rect>
+    )
+
+  })
+
+}
+
+function RouteGraph({ graph, path, source, destination, alongRoute = [], nextPriority = null }) {
 
   if (!graph || graph.nodes.length === 0) return null
 
@@ -100,10 +154,13 @@ function RouteGraph({ graph, path, source, destination }) {
 
   const pathSet = new Set(path || [])
 
+  // Extra vertical room for stacked operational-marker badges above nodes.
+  const extraHeight = MARKER_GAP * 3
+
   return (
     <div className="route-graph">
 
-      <svg viewBox={`0 0 ${width} ${height}`} style={{ width: '100%', height: 'auto', display: 'block' }}>
+      <svg viewBox={`0 -${extraHeight} ${width} ${height + extraHeight}`} style={{ width: '100%', height: 'auto', display: 'block' }}>
 
         {graph.edges.map(edge => {
 
@@ -155,6 +212,7 @@ function RouteGraph({ graph, path, source, destination }) {
               <text x={pos.x} y={pos.y + NODE_RADIUS + 14} textAnchor="middle" fontSize="10.5" fill="#263129">
                 {id}
               </text>
+              <OperationalMarkers nodeId={id} positions={positions} alongRoute={alongRoute} nextPriority={nextPriority} />
             </g>
           )
 
@@ -164,7 +222,9 @@ function RouteGraph({ graph, path, source, destination }) {
 
       <div className="route-graph-legend">
         <span><i style={{ background: '#d9a441' }} /> Response source</span>
-        <span><i style={{ background: '#a13c2d' }} /> Complaint location</span>
+        <span><i style={{ background: '#a13c2d' }} /> Current target</span>
+        {nextPriority && <span><i style={{ background: NEXT_PRIORITY_COLOR, borderRadius: '2px' }} /> Next priority</span>}
+        {alongRoute.length > 0 && <span><i style={{ background: ALONG_ROUTE_COLOR, borderRadius: '2px' }} /> Along route</span>}
         <span><i style={{ background: '#3f7d58', borderRadius: '2px' }} /> Shortest route</span>
       </div>
 

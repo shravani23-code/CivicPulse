@@ -12,12 +12,15 @@ const {
   processQueue
 } = require('../dsaEngines')
 const { bfsWithinHops } = require('../services/graphEngine')
+const { distanceToRouteMeters } = require('../services/geoEngine')
 const {
   civicGraph,
   AVERAGE_SPEED_KMH,
+  ROUTE_CORRIDOR_METERS,
   resolveLocationToNode,
   findBestResponse,
-  getGraphSnapshot
+  getGraphSnapshot,
+  buildRoutePolyline
 } = require('../data/civicGraph')
 
 // High/Critical complaints also get a BFS sweep of nearby areas worth
@@ -55,6 +58,87 @@ function computeResponse(complaint) {
     nearbyAreas,
     algorithm: 'Dijkstra'
   }
+
+}
+
+// True only when a complaint carries real, usable GPS — never invented.
+function hasValidCoordinates(complaint) {
+
+  return (
+    typeof complaint.latitude === 'number' && Number.isFinite(complaint.latitude) &&
+    typeof complaint.longitude === 'number' && Number.isFinite(complaint.longitude)
+  )
+
+}
+
+// Read-only summary of one complaint for admin operational display
+// (route/priority context) — never the citizen contact fields.
+function toOperationalSummary(complaint) {
+
+  return {
+    id: complaint.id,
+    title: complaint.title,
+    category: complaint.category,
+    severity: complaint.severity,
+    priority: computePriorityScore(complaint),
+    status: complaint.status,
+    location: complaint.location,
+    node: resolveLocationToNode(complaint.location)
+  }
+
+}
+
+// The Max Heap priority system stays the single source of truth for
+// "what's next" — this just peeks it over every OTHER unresolved
+// complaint (the current one is already excluded by the caller's query),
+// purely for display next to the route. It never reorders anything and
+// the graph/route data has no influence on this result.
+function computeNextPriority(otherUnresolvedComplaints) {
+
+  const top = peekHighestPriority(otherUnresolvedComplaints)
+
+  return top ? toOperationalSummary(top) : null
+
+}
+
+// Flags other unresolved complaints whose ACTUAL GPS lies within
+// ROUTE_CORRIDOR_METERS of the computed response route — real
+// point-to-route-segment geometry (see geoEngine.js), never a comparison
+// of graph node names. Complaints without valid coordinates are skipped
+// entirely rather than guessed at (see hasValidCoordinates above).
+//
+// This only tells the admin these complaints are physically nearby; its
+// membership here changes nothing about priority order — see
+// computeNextPriority, which is computed independently.
+//
+// Time complexity: O(n * p) for n candidate complaints and p = route path
+// length (a handful of nodes) — trivial at CivicPulse's current scale. A
+// much larger complaint volume would want a spatial index instead of
+// scanning every candidate, but that's not needed yet.
+function computeAlongRouteComplaints(routePath, otherUnresolvedComplaints) {
+
+  const routePoints = buildRoutePolyline(routePath)
+
+  const alongRoute = []
+
+  for (const complaint of otherUnresolvedComplaints) {
+
+    if (!hasValidCoordinates(complaint)) continue
+
+    const distanceMeters = distanceToRouteMeters(
+      { lat: complaint.latitude, lon: complaint.longitude },
+      routePoints
+    )
+
+    if (distanceMeters <= ROUTE_CORRIDOR_METERS) {
+      alongRoute.push({ ...toOperationalSummary(complaint), distanceMeters: Math.round(distanceMeters) })
+    }
+
+  }
+
+  alongRoute.sort((a, b) => a.distanceMeters - b.distanceMeters)
+
+  return alongRoute
 
 }
 
@@ -465,8 +549,17 @@ router.get('/:id/history', validateComplaintIdFormat, async (req, res) => {
 //
 // Full technical detail for the admin's "Response Route" panel: the
 // resolved source/destination, the Dijkstra path, distance/ETA, BFS
-// nearby-inspection areas, and a snapshot of the graph itself so the
-// frontend can draw the real network instead of a hand-drawn diagram.
+// nearby-inspection areas, a snapshot of the graph itself so the frontend
+// can draw the real network, PLUS priority-aware response intelligence:
+//
+//   - nextPriority: whichever OTHER unresolved complaint the existing Max
+//     Heap ranks highest right now — shown for context, never used to
+//     pick this complaint's route.
+//   - alongRoute: other unresolved complaints whose real GPS lies within
+//     ROUTE_CORRIDOR_METERS of this route (geoEngine.js), for the admin's
+//     awareness only. This complaint (the current target) stays the
+//     target regardless of what's found — priority is never overridden
+//     by geography.
 // ======================================
 
 router.get('/:id/route', requireAuth, requireRole('admin'), validateComplaintIdFormat, async (req, res) => {
@@ -491,9 +584,21 @@ router.get('/:id/route', requireAuth, requireRole('admin'), validateComplaintIdF
 
     }
 
+    // Every OTHER unresolved complaint — the pool both nextPriority and
+    // alongRoute are drawn from. Resolved complaints are excluded because
+    // neither question ("what's next" / "what's nearby right now") is
+    // meaningful for something already handled.
+    const others = await Complaint.find({
+      status: { $ne: 'Resolved' },
+      id: { $ne: complaint.id }
+    })
+
     res.json({
       message: 'Route calculated using Dijkstra shortest path',
       route: response,
+      nextPriority: computeNextPriority(others),
+      alongRoute: computeAlongRouteComplaints(response.path, others),
+      corridorMeters: ROUTE_CORRIDOR_METERS,
       graph: getGraphSnapshot()
     })
 
