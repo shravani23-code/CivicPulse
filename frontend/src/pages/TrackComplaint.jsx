@@ -6,6 +6,7 @@ import { API_BASE_URL } from '../config/api'
 import CopyButton from '../components/CopyButton'
 import ImageGallery from '../components/ImageGallery'
 import LocationMap from '../components/LocationMap'
+import { useAuth } from '../auth/useAuthContext'
 
 const COMPLAINT_ID_REGEX = /^CP\d{8}$/
 
@@ -26,6 +27,7 @@ const itemVariants = {
 }
 
 function TrackComplaint() {
+  const { token } = useAuth()
   const [complaintId, setComplaintId] = useState('')
   const [complaint, setComplaint] = useState(null)
   const [history, setHistory] = useState([])
@@ -58,15 +60,19 @@ function TrackComplaint() {
       // GET COMPLAINT
       // ==================================
 
+      const authHeaders = { Authorization: `Bearer ${token}` }
+
       const complaintResponse = await fetch(
-        `${API_BASE_URL}/api/complaints/${id}`
+        `${API_BASE_URL}/api/complaints/${id}`,
+        { headers: authHeaders }
       )
 
       const complaintData = await complaintResponse.json()
 
       if (!complaintResponse.ok) {
         throw new Error(
-          complaintData.message || 'Complaint not found.'
+          complaintData.message ||
+            'Complaint not found for your account. Please enter a Complaint ID registered under your account.'
         )
       }
 
@@ -78,7 +84,8 @@ function TrackComplaint() {
       // ==================================
 
       const historyResponse = await fetch(
-        `${API_BASE_URL}/api/complaints/${id}/history`
+        `${API_BASE_URL}/api/complaints/${id}/history`,
+        { headers: authHeaders }
       )
 
       const historyData = await historyResponse.json()

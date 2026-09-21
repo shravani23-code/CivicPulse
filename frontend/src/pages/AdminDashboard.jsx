@@ -497,7 +497,7 @@ function AdminDashboard() {
                 <Zap size={18} />
               </div>
               <div className="urgent-callout-body">
-                <span className="urgent-callout-label">Most Urgent Complaint (Priority Queue Peek)</span>
+                <span className="urgent-callout-label">Most Urgent Complaint</span>
                 <strong>{mostUrgent.id} — {mostUrgent.title}</strong>
                 <span className="urgent-callout-meta">
                   {mostUrgent.severity} severity · Priority score {mostUrgent.priority}

@@ -6,21 +6,19 @@ const { uploadBuffer } = require('../utils/cloudinary')
 const {
   severityScore,
   computePriorityScore,
+  calculatePriority,
   rankByPriority,
   peekHighestPriority,
   buildHistoryTimeline,
   processQueue
 } = require('../dsaEngines')
 const { bfsWithinHops } = require('../services/graphEngine')
-const { distanceToRouteMeters } = require('../services/geoEngine')
 const {
   civicGraph,
   AVERAGE_SPEED_KMH,
-  ROUTE_CORRIDOR_METERS,
   resolveLocationToNode,
   findBestResponse,
-  getGraphSnapshot,
-  buildRoutePolyline
+  getGraphSnapshot
 } = require('../data/civicGraph')
 
 // High/Critical complaints also get a BFS sweep of nearby areas worth
@@ -61,90 +59,35 @@ function computeResponse(complaint) {
 
 }
 
-// True only when a complaint carries real, usable GPS — never invented.
-function hasValidCoordinates(complaint) {
-
-  return (
-    typeof complaint.latitude === 'number' && Number.isFinite(complaint.latitude) &&
-    typeof complaint.longitude === 'number' && Number.isFinite(complaint.longitude)
-  )
-
-}
-
-// Read-only summary of one complaint for admin operational display
-// (route/priority context) — never the citizen contact fields.
-function toOperationalSummary(complaint) {
-
-  return {
-    id: complaint.id,
-    title: complaint.title,
-    category: complaint.category,
-    severity: complaint.severity,
-    priority: computePriorityScore(complaint),
-    status: complaint.status,
-    location: complaint.location,
-    node: resolveLocationToNode(complaint.location)
-  }
-
-}
-
-// The Max Heap priority system stays the single source of truth for
-// "what's next" — this just peeks it over every OTHER unresolved
-// complaint (the current one is already excluded by the caller's query),
-// purely for display next to the route. It never reorders anything and
-// the graph/route data has no influence on this result.
-function computeNextPriority(otherUnresolvedComplaints) {
-
-  const top = peekHighestPriority(otherUnresolvedComplaints)
-
-  return top ? toOperationalSummary(top) : null
-
-}
-
-// Flags other unresolved complaints whose ACTUAL GPS lies within
-// ROUTE_CORRIDOR_METERS of the computed response route — real
-// point-to-route-segment geometry (see geoEngine.js), never a comparison
-// of graph node names. Complaints without valid coordinates are skipped
-// entirely rather than guessed at (see hasValidCoordinates above).
-//
-// This only tells the admin these complaints are physically nearby; its
-// membership here changes nothing about priority order — see
-// computeNextPriority, which is computed independently.
-//
-// Time complexity: O(n * p) for n candidate complaints and p = route path
-// length (a handful of nodes) — trivial at CivicPulse's current scale. A
-// much larger complaint volume would want a spatial index instead of
-// scanning every candidate, but that's not needed yet.
-function computeAlongRouteComplaints(routePath, otherUnresolvedComplaints) {
-
-  const routePoints = buildRoutePolyline(routePath)
-
-  const alongRoute = []
-
-  for (const complaint of otherUnresolvedComplaints) {
-
-    if (!hasValidCoordinates(complaint)) continue
-
-    const distanceMeters = distanceToRouteMeters(
-      { lat: complaint.latitude, lon: complaint.longitude },
-      routePoints
-    )
-
-    if (distanceMeters <= ROUTE_CORRIDOR_METERS) {
-      alongRoute.push({ ...toOperationalSummary(complaint), distanceMeters: Math.round(distanceMeters) })
-    }
-
-  }
-
-  alongRoute.sort((a, b) => a.distanceMeters - b.distanceMeters)
-
-  return alongRoute
-
-}
-
 const router = express.Router()
 
 const COMPLAINT_ID_REGEX = /^CP\d{8}$/
+
+// Mirrors the exact `value`s the citizen-facing category/severity pickers
+// send (see CATEGORIES/SEVERITIES in ReportComplaint.jsx) — kept here too,
+// not just as a schema enum, so a malformed direct API request gets a
+// clean 400 instead of surfacing a raw Mongoose validation error.
+const ALLOWED_CATEGORIES = ['Road', 'Garbage', 'Water', 'Streetlight', 'Drainage', 'Traffic', 'Other']
+const ALLOWED_SEVERITIES = ['Low', 'Medium', 'High', 'Critical']
+
+// Parses an optional latitude/longitude form field. Returns:
+//   - undefined  when the field was never provided (older complaints, or
+//     GPS unavailable/denied at submission time — always allowed)
+//   - a finite in-range number when it validly was
+//   - null       when the field WAS provided but isn't a valid finite
+//     number within range — the caller rejects the request in that case,
+//     it never silently drops bad data.
+function parseOptionalCoordinate(value, min, max) {
+
+  if (value === undefined || value === null || value === '') return undefined
+
+  const numeric = Number(value)
+
+  if (!Number.isFinite(numeric) || numeric < min || numeric > max) return null
+
+  return numeric
+
+}
 
 const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
 
@@ -201,7 +144,8 @@ async function generateUniqueComplaintId() {
 
 }
 
-// Strips fields that shouldn't be exposed on public (unauthenticated) routes.
+// Strips citizen contact fields a viewer doesn't need repeated back to
+// them (used for the citizen's own complaint on Track Complaint).
 function toPublicComplaint(complaint) {
 
   const obj = complaint.toObject ? complaint.toObject() : complaint
@@ -222,6 +166,30 @@ function withLivePriority(complaint) {
 
   return obj
 
+}
+
+// Ownership check for Track Complaint: a complaint's owner (its
+// citizenId, set from the authenticated submitter at creation time — see
+// POST /) or an admin. This is the ONLY thing that decides whether a
+// citizen can view a complaint by ID — never the complaint ID itself,
+// which is not a secret and must not double as an access token.
+function isComplaintOwner(complaint, user) {
+
+  if (!user) return false
+
+  if (user.role === 'admin') return true
+
+  return Boolean(complaint.citizenId) && String(complaint.citizenId) === String(user.id)
+
+}
+
+// Track Complaint deliberately answers "not found" and "found but not
+// yours" identically — a distinct "forbidden" response would confirm to
+// anyone guessing IDs that a given Complaint ID exists and belongs to
+// someone else. Same status, same message, either way.
+const COMPLAINT_NOT_FOUND_FOR_USER = {
+  status: 404,
+  message: 'Complaint not found for your account. Please enter a Complaint ID registered under your account.'
 }
 
 
@@ -338,44 +306,230 @@ router.get('/priority', requireAuth, requireRole('admin'), async (req, res) => {
 
 
 // ======================================
-// COMPLAINT PROCESSING QUEUE — FIFO (admin only)
+// COMPLAINT PROCESSING QUEUE — FIFO
+// ======================================
+//
+// FIFO Queue is used for processing order.
+//
+// Important distinction:
+//
+// MAX HEAP:
+//   Decides which complaint is more urgent.
+//
+// FIFO QUEUE:
+//   Maintains arrival/processing order.
+//
+// The FIFO queue does NOT replace the Priority Queue.
+//
+// This endpoint returns active complaints in FIFO order
+// and also calculates their CURRENT priority information
+// for display.
+//
 // ======================================
 
-router.get('/queue', requireAuth, requireRole('admin'), async (req, res) => {
+router.get(
+  '/queue',
+  requireAuth,
+  requireRole('admin'),
+  async (req, res) => {
 
-  try {
+    try {
 
-    const complaints = await Complaint.find({ status: { $ne: 'Resolved' } }).sort({ createdAt: 1 })
+      // ============================================
+      // 1. GET ONLY ACTIVE COMPLAINTS
+      // ============================================
+      //
+      // Resolved complaints should not enter the
+      // active processing queue.
+      //
+      // createdAt ascending means:
+      //
+      // oldest complaint
+      //        ↓
+      // newest complaint
+      //
+      // This gives us the arrival order for FIFO.
+      //
 
-    const queueComplaints = processQueue(complaints).map((complaint, index) => ({
-      position: index + 1,
-      id: complaint.id,
-      title: complaint.title,
-      category: complaint.category,
-      severity: complaint.severity,
-      priority: complaint.priority,
-      status: complaint.status,
-      createdAt: complaint.createdAt
-    }))
+      const complaints =
+        await Complaint.find({
+          status: {
+            $ne: 'Resolved'
+          }
+        }).sort({
+          createdAt: 1
+        })
 
-    res.json({ message: 'Complaints processed using FIFO Queue', queue: queueComplaints })
 
-  } catch (error) {
+      // ============================================
+      // 2. SEND COMPLAINTS THROUGH FIFO QUEUE
+      // ============================================
+      //
+      // processQueue() uses ComplaintQueue.
+      //
+      // First complaint entered
+      //        ↓
+      // first complaint processed
+      //
+      // ============================================
 
-    console.error('Queue integration error:', error)
+      const processedComplaints =
+        processQueue(
+          complaints
+        )
 
-    res.status(500).json({ message: 'Failed to process complaint queue.', error: error.message })
+
+      // ============================================
+      // 3. PREPARE QUEUE RESPONSE
+      // ============================================
+      //
+      // IMPORTANT:
+      //
+      // We calculate priority LIVE here.
+      //
+      // We do NOT use:
+      //
+      // complaint.priority
+      //
+      // because that value may be the old stored
+      // priority from the time the complaint was created.
+      //
+      // ============================================
+
+      const queueComplaints =
+        processedComplaints.map(
+          (
+            complaint,
+            index
+          ) => {
+
+            const priority =
+              calculatePriority(
+                complaint
+              )
+
+
+            return {
+
+              // FIFO position
+              position:
+                index + 1,
+
+
+              // Complaint information
+              id:
+                complaint.id,
+
+              title:
+                complaint.title,
+
+              category:
+                complaint.category,
+
+
+              // Original citizen-selected severity
+              severity:
+                complaint.severity,
+
+
+              // Severity after safety-rule checking
+              //
+              // Example:
+              //
+              // severity = Medium
+              // description = "exposed live wire"
+              //
+              // effectiveSeverity = Critical
+              //
+              effectiveSeverity:
+                priority.effectiveSeverity,
+
+
+              // Convenient display value
+              //
+              // Example:
+              //
+              // Critical + score 20 = 420
+              // High + score 20     = 320
+              //
+              priority:
+                priority.displayPriority,
+
+
+              // Actual priority tier
+              //
+              // Critical = 4
+              // High     = 3
+              // Medium   = 2
+              // Low      = 1
+              //
+              priorityTier:
+                priority.tier,
+
+
+              // Score within the tier
+              priorityScore:
+                priority.score,
+
+
+              // Current status
+              status:
+                complaint.status,
+
+
+              // Used to show arrival time
+              createdAt:
+                complaint.createdAt
+
+            }
+
+          }
+        )
+
+
+      // ============================================
+      // 4. SEND RESPONSE
+      // ============================================
+
+      res.json({
+
+        message:
+          'Complaints processed using FIFO Queue',
+
+        queue:
+          queueComplaints
+
+      })
+
+
+    } catch (error) {
+
+      console.error(
+        'Queue integration error:',
+        error
+      )
+
+
+      res.status(500).json({
+
+        message:
+          'Failed to process complaint queue.',
+
+        error:
+          error.message
+
+      })
+
+    }
 
   }
-
-})
-
+)
 
 // ======================================
 // SUBMIT COMPLAINT (citizen only, multipart with optional images)
 // ======================================
 
-router.post('/', requireAuth, upload.array('images', 5), async (req, res) => {
+router.post('/', requireAuth, requireRole('citizen'), upload.array('images', 5), async (req, res) => {
 
   try {
 
@@ -385,6 +539,25 @@ router.post('/', requireAuth, upload.array('images', 5), async (req, res) => {
 
       return res.status(400).json({ message: 'Please provide all required complaint details.' })
 
+    }
+
+    if (!ALLOWED_CATEGORIES.includes(category)) {
+      return res.status(400).json({ message: 'Invalid category selected.' })
+    }
+
+    if (!ALLOWED_SEVERITIES.includes(severity)) {
+      return res.status(400).json({ message: 'Invalid severity level selected.' })
+    }
+
+    const latitudeValue = parseOptionalCoordinate(latitude, -90, 90)
+    const longitudeValue = parseOptionalCoordinate(longitude, -180, 180)
+
+    if (latitudeValue === null) {
+      return res.status(400).json({ message: 'Latitude must be a valid number between -90 and 90.' })
+    }
+
+    if (longitudeValue === null) {
+      return res.status(400).json({ message: 'Longitude must be a valid number between -180 and 180.' })
     }
 
     // ==================================
@@ -401,9 +574,6 @@ router.post('/', requireAuth, upload.array('images', 5), async (req, res) => {
 
     const priority = severityScore(severity)
 
-    const latitudeValue = latitude !== undefined && latitude !== '' ? Number(latitude) : undefined
-    const longitudeValue = longitude !== undefined && longitude !== '' ? Number(longitude) : undefined
-
     const complaint = new Complaint({
 
       id: complaintId,
@@ -411,8 +581,8 @@ router.post('/', requireAuth, upload.array('images', 5), async (req, res) => {
       category,
       description,
       location,
-      latitude: Number.isFinite(latitudeValue) ? latitudeValue : undefined,
-      longitude: Number.isFinite(longitudeValue) ? longitudeValue : undefined,
+      latitude: latitudeValue,
+      longitude: longitudeValue,
       severity,
       status: 'Pending',
       priority,
@@ -474,17 +644,26 @@ router.put('/:id/status', requireAuth, requireRole('admin'), validateComplaintId
       return res.status(404).json({ message: 'Complaint not found.' })
     }
 
+    const isRealTransition = complaint.status !== status
+
     complaint.status = status
 
     if (!Array.isArray(complaint.history)) {
       complaint.history = []
     }
 
-    complaint.history.push({
-      status,
-      timestamp: new Date(),
-      description: `Complaint status changed to ${status}.`
-    })
+    // Only a genuine status change gets a history entry — re-selecting
+    // the status a complaint is already in (e.g. Pending -> Pending)
+    // would otherwise log a fake transition that never happened.
+    if (isRealTransition) {
+
+      complaint.history.push({
+        status,
+        timestamp: new Date(),
+        description: `Complaint status changed to ${status}.`
+      })
+
+    }
 
     await complaint.save()
 
@@ -502,17 +681,17 @@ router.put('/:id/status', requireAuth, requireRole('admin'), validateComplaintId
 
 
 // ======================================
-// COMPLAINT HISTORY — LINKED LIST (public)
+// COMPLAINT HISTORY — LINKED LIST (Track Complaint — owner or admin only)
 // ======================================
 
-router.get('/:id/history', validateComplaintIdFormat, async (req, res) => {
+router.get('/:id/history', requireAuth, validateComplaintIdFormat, async (req, res) => {
 
   try {
 
     const complaint = await Complaint.findOne({ id: req.params.id })
 
-    if (!complaint) {
-      return res.status(404).json({ message: 'Complaint not found.' })
+    if (!complaint || !isComplaintOwner(complaint, req.user)) {
+      return res.status(COMPLAINT_NOT_FOUND_FOR_USER.status).json({ message: COMPLAINT_NOT_FOUND_FOR_USER.message })
     }
 
     if (!Array.isArray(complaint.history) || complaint.history.length === 0) {
@@ -548,18 +727,12 @@ router.get('/:id/history', validateComplaintIdFormat, async (req, res) => {
 // RESPONSE ROUTE — DIJKSTRA SHORTEST PATH (admin only)
 //
 // Full technical detail for the admin's "Response Route" panel: the
-// resolved source/destination, the Dijkstra path, distance/ETA, BFS
-// nearby-inspection areas, a snapshot of the graph itself so the frontend
-// can draw the real network, PLUS priority-aware response intelligence:
-//
-//   - nextPriority: whichever OTHER unresolved complaint the existing Max
-//     Heap ranks highest right now — shown for context, never used to
-//     pick this complaint's route.
-//   - alongRoute: other unresolved complaints whose real GPS lies within
-//     ROUTE_CORRIDOR_METERS of this route (geoEngine.js), for the admin's
-//     awareness only. This complaint (the current target) stays the
-//     target regardless of what's found — priority is never overridden
-//     by geography.
+// resolved source/destination, the Dijkstra path, distance/ETA, and a
+// snapshot of the graph itself so the frontend can draw the real
+// network. Scoped entirely to THIS complaint — the response source is
+// always the Municipal Office and the destination is always this
+// complaint's own location; no other complaint's data is ever computed,
+// stored, or returned here.
 // ======================================
 
 router.get('/:id/route', requireAuth, requireRole('admin'), validateComplaintIdFormat, async (req, res) => {
@@ -584,21 +757,9 @@ router.get('/:id/route', requireAuth, requireRole('admin'), validateComplaintIdF
 
     }
 
-    // Every OTHER unresolved complaint — the pool both nextPriority and
-    // alongRoute are drawn from. Resolved complaints are excluded because
-    // neither question ("what's next" / "what's nearby right now") is
-    // meaningful for something already handled.
-    const others = await Complaint.find({
-      status: { $ne: 'Resolved' },
-      id: { $ne: complaint.id }
-    })
-
     res.json({
       message: 'Route calculated using Dijkstra shortest path',
       route: response,
-      nextPriority: computeNextPriority(others),
-      alongRoute: computeAlongRouteComplaints(response.path, others),
-      corridorMeters: ROUTE_CORRIDOR_METERS,
       graph: getGraphSnapshot()
     })
 
@@ -620,16 +781,20 @@ router.get('/:id/route', requireAuth, requireRole('admin'), validateComplaintIdF
 // reduced to what a citizen actually needs: is a response route
 // available, how far, how soon. No node names, no path, no algorithm
 // terminology — the graph stays entirely behind the scenes here.
+//
+// Owner-or-admin only, same as GET /:id and /:id/history — response
+// timing is still complaint-specific information, so a Complaint ID
+// alone must not unlock it for anyone who isn't the owner.
 // ======================================
 
-router.get('/:id/response-status', validateComplaintIdFormat, async (req, res) => {
+router.get('/:id/response-status', requireAuth, validateComplaintIdFormat, async (req, res) => {
 
   try {
 
     const complaint = await Complaint.findOne({ id: req.params.id })
 
-    if (!complaint) {
-      return res.status(404).json({ message: 'Complaint not found.' })
+    if (!complaint || !isComplaintOwner(complaint, req.user)) {
+      return res.status(COMPLAINT_NOT_FOUND_FOR_USER.status).json({ message: COMPLAINT_NOT_FOUND_FOR_USER.message })
     }
 
     const response = computeResponse(complaint)
@@ -653,17 +818,26 @@ router.get('/:id/response-status', validateComplaintIdFormat, async (req, res) =
 
 
 // ======================================
-// GET COMPLAINT BY ID (public — citizen contact info stripped)
+// GET COMPLAINT BY ID (Track Complaint — owner or admin only)
+//
+// Complaint ID alone is NOT authorization: it's a human-shareable
+// tracking number, not a secret token. Every request here must carry a
+// valid JWT (requireAuth), and the requester must either own the
+// complaint (citizenId matches) or be an admin — enforced entirely on
+// the backend, never left to the frontend to hide fields. A complaint
+// that exists but belongs to someone else is answered identically to
+// one that doesn't exist at all (see COMPLAINT_NOT_FOUND_FOR_USER) so
+// the response never confirms another user's Complaint ID is real.
 // ======================================
 
-router.get('/:id', validateComplaintIdFormat, async (req, res) => {
+router.get('/:id', requireAuth, validateComplaintIdFormat, async (req, res) => {
 
   try {
 
     const complaint = await Complaint.findOne({ id: req.params.id })
 
-    if (!complaint) {
-      return res.status(404).json({ message: 'Complaint not found.' })
+    if (!complaint || !isComplaintOwner(complaint, req.user)) {
+      return res.status(COMPLAINT_NOT_FOUND_FOR_USER.status).json({ message: COMPLAINT_NOT_FOUND_FOR_USER.message })
     }
 
     res.json(toPublicComplaint(withLivePriority(complaint)))

@@ -15,7 +15,11 @@ const complaintSchema = new mongoose.Schema({
 
   category: {
     type: String,
-    required: true
+    required: true,
+    enum: {
+      values: ['Road', 'Garbage', 'Water', 'Streetlight', 'Drainage', 'Traffic', 'Other'],
+      message: '{VALUE} is not a valid complaint category.'
+    }
   },
 
   description: {
@@ -28,17 +32,28 @@ const complaintSchema = new mongoose.Schema({
     required: true
   },
 
+  // Optional: GPS was added to CivicPulse after launch, so older complaints
+  // legitimately have neither field set. When present, each must fall
+  // within its real-world range — never trusted blindly from the client.
   latitude: {
-    type: Number
+    type: Number,
+    min: [-90, 'Latitude must be between -90 and 90.'],
+    max: [90, 'Latitude must be between -90 and 90.']
   },
 
   longitude: {
-    type: Number
+    type: Number,
+    min: [-180, 'Longitude must be between -180 and 180.'],
+    max: [180, 'Longitude must be between -180 and 180.']
   },
 
   severity: {
     type: String,
-    required: true
+    required: true,
+    enum: {
+      values: ['Low', 'Medium', 'High', 'Critical'],
+      message: '{VALUE} is not a valid severity level.'
+    }
   },
 
   status: {

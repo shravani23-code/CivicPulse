@@ -40,7 +40,7 @@ function ComplaintDetailsModal({ complaint, onClose, isAdmin = false, onStatusCh
       : `${API_BASE_URL}/api/complaints/${complaint.id}/response-status`
 
     fetch(endpoint, {
-      headers: isAdmin ? { Authorization: `Bearer ${token}` } : {}
+      headers: { Authorization: `Bearer ${token}` }
     })
       .then(response => response.json())
       .then(data => {
@@ -48,9 +48,7 @@ function ComplaintDetailsModal({ complaint, onClose, isAdmin = false, onStatusCh
         if (isAdmin) {
           setRouteInfo({
             route: data.route || null,
-            graph: data.graph || null,
-            nextPriority: data.nextPriority || null,
-            alongRoute: data.alongRoute || []
+            graph: data.graph || null
           })
         } else {
           setResponseStatus(data.status || null)
@@ -204,8 +202,6 @@ function ComplaintDetailsModal({ complaint, onClose, isAdmin = false, onStatusCh
                       path={routeInfo.route.path}
                       source={routeInfo.route.source}
                       destination={routeInfo.route.destination}
-                      alongRoute={routeInfo.alongRoute}
-                      nextPriority={routeInfo.nextPriority}
                     />
 
                     <div className="result-grid">
@@ -235,70 +231,7 @@ function ComplaintDetailsModal({ complaint, onClose, isAdmin = false, onStatusCh
                         <strong>~{routeInfo.route.etaMinutes} min</strong>
                       </div>
 
-                      {routeInfo.route.nearbyAreas.length > 0 && (
-                        <div className="result-item">
-                          <span>Nearby Areas to Inspect</span>
-                          <strong>{routeInfo.route.nearbyAreas.join(', ')}</strong>
-                        </div>
-                      )}
-
                     </div>
-
-                    {routeInfo.nextPriority && (
-
-                      <div className="response-subsection">
-
-                        <span className="response-subsection-label">Next Priority Complaint</span>
-
-                        <div className="along-route-item">
-                          <div className="along-route-item-head">
-                            <strong>{routeInfo.nextPriority.id}</strong>
-                            <span className={`severity-badge ${routeInfo.nextPriority.severity.toLowerCase()}`}>
-                              {routeInfo.nextPriority.severity}
-                            </span>
-                          </div>
-                          <div className="along-route-item-meta">
-                            {routeInfo.nextPriority.category} · Priority {routeInfo.nextPriority.priority} · {routeInfo.nextPriority.location}
-                          </div>
-                        </div>
-
-                      </div>
-
-                    )}
-
-                    {routeInfo.alongRoute.length > 0 && (
-
-                      <div className="response-subsection">
-
-                        <span className="response-subsection-label">Along-Route Complaints</span>
-
-                        <p className="along-route-note">
-                          {routeInfo.alongRoute.length} complaint{routeInfo.alongRoute.length === 1 ? '' : 's'} detected along this response route. These do not change priority.
-                        </p>
-
-                        <div className="along-route-list">
-
-                          {routeInfo.alongRoute.map(item => (
-
-                            <div className="along-route-item" key={item.id}>
-                              <div className="along-route-item-head">
-                                <strong>{item.id}</strong>
-                                <span className={`severity-badge ${item.severity.toLowerCase()}`}>
-                                  {item.severity}
-                                </span>
-                              </div>
-                              <div className="along-route-item-meta">
-                                {item.category} · Priority {item.priority} · {item.location}
-                              </div>
-                            </div>
-
-                          ))}
-
-                        </div>
-
-                      </div>
-
-                    )}
 
                   </>
 
@@ -314,7 +247,7 @@ function ComplaintDetailsModal({ complaint, onClose, isAdmin = false, onStatusCh
 
             )}
 
-            {!isAdmin && responseStatus && (
+            {!isAdmin && (responseStatus || complaint.status === 'Resolved') && (
 
               <div className="modal-section">
                 <span className="modal-section-label">Response Status</span>
@@ -322,22 +255,39 @@ function ComplaintDetailsModal({ complaint, onClose, isAdmin = false, onStatusCh
                 <div className="response-status-list">
 
                   <div className="response-status-item">✓ Complaint received</div>
-                  <div className="response-status-item">Your complaint is currently in the response queue.</div>
 
-                  {responseStatus.available ? (
+                  {complaint.status === 'Resolved' && (
+
+                    <div className="response-status-item">✓ Complaint resolved</div>
+
+                  )}
+
+                  {complaint.status === 'In Progress' && (
 
                     <>
-                      <div className="response-status-item">✓ Location identified</div>
-                      <div className="response-status-item">✓ Response team assigned</div>
-                      <div className="response-status-eta">
-                        → Estimated arrival: ~{responseStatus.etaMinutes} min ({responseStatus.distanceKm} km away)
-                      </div>
+                      <div className="response-status-item">✓ Response team assigned / complaint is being processed</div>
+
+                      {responseStatus?.available ? (
+
+                        <div className="response-status-eta">
+                          → Estimated arrival: ~{responseStatus.etaMinutes} min ({responseStatus.distanceKm} km away)
+                        </div>
+
+                      ) : (
+
+                        <div className="response-status-item pending">
+                          Response time is currently unavailable for this location.
+                        </div>
+
+                      )}
                     </>
 
-                  ) : (
+                  )}
+
+                  {complaint.status === 'Pending' && (
 
                     <div className="response-status-item pending">
-                      Response time is currently unavailable for this location.
+                      Complaint is currently pending processing.
                     </div>
 
                   )}

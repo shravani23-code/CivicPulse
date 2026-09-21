@@ -22,10 +22,18 @@ function App() {
         <Routes>
 
           <Route path="/" element={<Home />} />
-          <Route path="/track-complaint" element={<TrackComplaint />} />
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
           <Route path="/admin/login" element={<AdminLogin />} />
+
+          <Route
+            path="/track-complaint"
+            element={
+              <ProtectedRoute role="citizen">
+                <TrackComplaint />
+              </ProtectedRoute>
+            }
+          />
 
           <Route
             path="/report-complaint"
