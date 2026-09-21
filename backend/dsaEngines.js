@@ -417,10 +417,12 @@ function calculateWithinTierScore(
   // ----------------------------------------------------------
 
   const ageDays =
+  Math.floor(
     getAgeDays(
       complaint?.createdAt,
       now
     )
+  )
 
   const ageScore =
     Math.min(
