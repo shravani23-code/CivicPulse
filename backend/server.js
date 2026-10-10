@@ -5,6 +5,8 @@ require('dotenv').config()
 
 const authRoutes = require('./routes/authRoutes')
 const complaintRoutes = require('./routes/complaintRoutes')
+const notificationRoutes = require('./routes/notificationRoutes')
+const moderationRoutes = require('./routes/moderationRoutes')
 const seedAdmin = require('./utils/seedAdmin')
 
 
@@ -48,6 +50,8 @@ app.get('/', (req, res) => {
 
 app.use('/api/auth', authRoutes)
 app.use('/api/complaints', complaintRoutes)
+app.use('/api/notifications', notificationRoutes)
+app.use('/api/moderation', moderationRoutes)
 
 
 // ======================================
@@ -70,23 +74,31 @@ app.use((error, req, res, next) => {
 // CONNECT MONGODB + START SERVER
 // ======================================
 
-mongoose
-  .connect(process.env.MONGODB_URI)
-  .then(async () => {
+// Started only when run directly (`node server.js` / `npm start`), so
+// tests can require the app without connecting to the real database.
+if (require.main === module) {
 
-    console.log('MongoDB connected successfully!')
+  mongoose
+    .connect(process.env.MONGODB_URI)
+    .then(async () => {
 
-    await seedAdmin()
+      console.log('MongoDB connected successfully!')
 
-    const PORT = process.env.PORT || 5000
+      await seedAdmin()
 
-    app.listen(PORT, () => {
-      console.log(`CivicPulse backend running on port ${PORT}`)
+      const PORT = process.env.PORT || 5000
+
+      app.listen(PORT, () => {
+        console.log(`CivicPulse backend running on port ${PORT}`)
+      })
+
+    })
+    .catch((error) => {
+
+      console.error('MongoDB connection failed:', error.message)
+
     })
 
-  })
-  .catch((error) => {
+}
 
-    console.error('MongoDB connection failed:', error.message)
-
-  })
+module.exports = app

@@ -75,7 +75,7 @@ const HOW_IT_WORKS_STEPS = [
 
 function Home() {
 
-  const { isAuthenticated, user, logout } = useAuth()
+  const { isAuthenticated, user, logout, token } = useAuth()
 
   const [stats, setStats] = useState({
     total: 0,
@@ -89,6 +89,7 @@ function Home() {
     useState(true)
 
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const [unreadNotifications, setUnreadNotifications] = useState(0)
   const [scrolled, setScrolled] = useState(false)
   const [activeSection, setActiveSection] = useState('home')
 
@@ -145,6 +146,27 @@ function Home() {
     fetchStats()
 
   }, [])
+
+
+  // Unread notification count for the citizen's "My Complaints" link
+  const isCitizen = isAuthenticated && user?.role === 'citizen'
+
+  useEffect(() => {
+
+    if (!isCitizen) return
+
+    let cancelled = false
+
+    fetch(`${API_BASE_URL}/api/notifications/unread-count`, {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+      .then(response => (response.ok ? response.json() : null))
+      .then(data => { if (!cancelled && data) setUnreadNotifications(data.unreadCount || 0) })
+      .catch(() => {})
+
+    return () => { cancelled = true }
+
+  }, [isCitizen, token])
 
 
   // Sticky navbar shadow after scrolling past the top of the hero
@@ -243,7 +265,7 @@ function Home() {
         <div className="nav-right">
 
           {isAuthenticated && user.role === 'citizen' && (
-            <Link to="/dashboard" className="nav-button">My Complaints</Link>
+            <Link to="/dashboard" className="nav-button">My Complaints{unreadNotifications > 0 && <span className="nav-badge" aria-label={`${unreadNotifications} unread notifications`}>{unreadNotifications}</span>}</Link>
           )}
 
           {isAuthenticated && user.role === 'admin' && (
@@ -279,7 +301,7 @@ function Home() {
             <a href="#about" onClick={() => setMobileMenuOpen(false)}>About</a>
 
             {isAuthenticated && user.role === 'citizen' && (
-              <Link to="/dashboard" className="nav-button" onClick={() => setMobileMenuOpen(false)}>My Complaints</Link>
+              <Link to="/dashboard" className="nav-button" onClick={() => setMobileMenuOpen(false)}>My Complaints{unreadNotifications > 0 && <span className="nav-badge" aria-label={`${unreadNotifications} unread notifications`}>{unreadNotifications}</span>}</Link>
             )}
 
             {isAuthenticated && user.role === 'admin' && (

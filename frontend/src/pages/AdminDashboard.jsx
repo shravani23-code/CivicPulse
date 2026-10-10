@@ -37,6 +37,8 @@ import ComplaintDetailsModal from '../components/ComplaintDetailsModal'
 
 import CopyButton from '../components/CopyButton'
 
+import ModerationPanel from '../components/ModerationPanel'
+
 
 // ======================================
 // COLORS
@@ -1167,6 +1169,13 @@ function AdminDashboard() {
             </div>
 
           )}
+
+
+          {/* ==================================
+              MODERATION REVIEW
+          ================================== */}
+
+          <ModerationPanel onWorkflowChange={fetchComplaints} />
 
 
           {/* ==================================

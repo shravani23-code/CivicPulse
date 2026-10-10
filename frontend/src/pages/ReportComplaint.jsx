@@ -45,6 +45,23 @@ const MAX_IMAGES = 5
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024 // 5MB
 const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
 
+// Mirrors normalizeIndianMobile() in backend/utils/mobile.js — the
+// backend re-validates, this just gives instant feedback.
+function normalizeIndianMobile(input) {
+
+  const raw = String(input || '').trim()
+
+  if (!/^\+?[\d\s\-()]+$/.test(raw)) return null
+
+  let digits = raw.replace(/\D/g, '')
+
+  if (digits.length === 12 && digits.startsWith('91')) digits = digits.slice(2)
+  else if (digits.length === 11 && digits.startsWith('0')) digits = digits.slice(1)
+
+  return /^[6-9]\d{9}$/.test(digits) ? `+91${digits}` : null
+
+}
+
 function ReportComplaint() {
 
   const { token } = useAuth()
@@ -58,8 +75,18 @@ function ReportComplaint() {
     severity: '',
     images: [],
     latitude: null,
-    longitude: null
+    longitude: null,
+    mobile: ''
   })
+
+  // Saved mobile number (masked) from the citizen's profile, if any
+  const [profile, setProfile] = useState(null)
+  const [useSavedMobile, setUseSavedMobile] = useState(true)
+  const [otpSent, setOtpSent] = useState(false)
+  const [otpCode, setOtpCode] = useState('')
+  const [otpBusy, setOtpBusy] = useState(false)
+  const [otpMessage, setOtpMessage] = useState('')
+  const [submittedModeration, setSubmittedModeration] = useState(null)
 
   const [step, setStep] = useState(1)
   const [stepError, setStepError] = useState('')
@@ -75,6 +102,117 @@ function ReportComplaint() {
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   const fileInputRef = useRef(null)
+
+
+  // Load the citizen's saved mobile number (masked) so it can be reused
+  // instead of asked for again.
+  useEffect(() => {
+
+    let cancelled = false
+
+    fetch(`${API_BASE_URL}/api/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(response => (response.ok ? response.json() : null))
+      .then(data => { if (!cancelled && data) setProfile(data) })
+      .catch(() => {})
+
+    return () => { cancelled = true }
+
+  }, [token])
+
+  const usingSavedMobile = Boolean(profile?.hasMobile && useSavedMobile)
+
+
+  async function refreshProfile() {
+
+    const response = await fetch(`${API_BASE_URL}/api/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
+
+    if (response.ok) setProfile(await response.json())
+
+  }
+
+
+  // Optional OTP verification — only offered when the backend reports an
+  // SMS provider is configured. Never simulated.
+  async function sendOtp() {
+
+    setOtpMessage('')
+
+    if (!usingSavedMobile && !normalizeIndianMobile(formData.mobile)) {
+      setOtpMessage('Enter a valid mobile number first.')
+      return
+    }
+
+    setOtpBusy(true)
+
+    try {
+
+      const response = await fetch(`${API_BASE_URL}/api/auth/mobile/send-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(usingSavedMobile ? {} : { mobile: formData.mobile })
+      })
+
+      const data = await response.json()
+
+      setOtpMessage(data.message || '')
+
+      if (response.ok) setOtpSent(true)
+
+    } catch {
+
+      setOtpMessage('Could not reach the server. Please try again.')
+
+    } finally {
+
+      setOtpBusy(false)
+
+    }
+
+  }
+
+  async function verifyOtp() {
+
+    setOtpBusy(true)
+    setOtpMessage('')
+
+    try {
+
+      const response = await fetch(`${API_BASE_URL}/api/auth/mobile/verify-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ code: otpCode.trim() })
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        setOtpMessage(data.attemptsRemaining !== undefined
+          ? `${data.message} ${data.attemptsRemaining} attempt(s) left.`
+          : data.message)
+        return
+      }
+
+      setOtpSent(false)
+      setOtpCode('')
+      setOtpMessage('')
+      setUseSavedMobile(true)
+      setFormData(prev => ({ ...prev, mobile: '' }))
+
+      await refreshProfile()
+
+      toast.success('Mobile number verified.')
+
+    } catch {
+
+      setOtpMessage('Could not reach the server. Please try again.')
+
+    } finally {
+
+      setOtpBusy(false)
+
+    }
+
+  }
 
 
   // Handle text, select and textarea changes
@@ -249,6 +387,9 @@ function ReportComplaint() {
     if (currentStep === 1) {
       if (!formData.title.trim()) return 'Please enter a complaint title.'
       if (!formData.category) return 'Please select a category.'
+      if (!usingSavedMobile && !normalizeIndianMobile(formData.mobile)) {
+        return 'Please enter a valid 10-digit Indian mobile number (starting with 6, 7, 8 or 9).'
+      }
     }
 
     if (currentStep === 2) {
@@ -300,6 +441,9 @@ function ReportComplaint() {
       if (formData.latitude !== null) body.append('latitude', formData.latitude)
       if (formData.longitude !== null) body.append('longitude', formData.longitude)
 
+      // Omitted when reusing the number saved on the account
+      if (!usingSavedMobile) body.append('mobile', formData.mobile.trim())
+
       formData.images.forEach(file => body.append('images', file))
 
       const response = await fetch(
@@ -333,6 +477,7 @@ function ReportComplaint() {
       }
 
       setSubmittedComplaint(data.complaint)
+      setSubmittedModeration(data.moderation || null)
 
     } catch {
 
@@ -480,6 +625,90 @@ function ReportComplaint() {
                     })}
 
                   </div>
+
+                </div>
+
+
+                <div className="form-group">
+
+                  <label htmlFor="complaint-mobile">
+                    Mobile Number
+                  </label>
+
+                  {usingSavedMobile ? (
+
+                    <div className="mobile-saved">
+                      <span>
+                        Using your saved number <strong>{profile.mobileMasked}</strong>
+                        {profile.mobileVerified ? ' (verified)' : ''}
+                      </span>
+                      <button type="button" className="link-button" onClick={() => { setUseSavedMobile(false); setOtpSent(false); setOtpMessage('') }}>
+                        Use a different number
+                      </button>
+                    </div>
+
+                  ) : (
+
+                    <>
+                      <input
+                        id="complaint-mobile"
+                        type="tel"
+                        name="mobile"
+                        inputMode="tel"
+                        autoComplete="tel"
+                        maxLength={16}
+                        placeholder="Example: 98765 43210"
+                        value={formData.mobile}
+                        onChange={handleChange}
+                      />
+                      {profile?.hasMobile && (
+                        <button type="button" className="link-button" onClick={() => { setUseSavedMobile(true); setOtpSent(false); setOtpMessage('') }}>
+                          Use my saved number instead
+                        </button>
+                      )}
+                    </>
+
+                  )}
+
+                  {profile?.smsVerificationAvailable && !(usingSavedMobile && profile.mobileVerified) && (
+
+                    <div>
+
+                      {!otpSent ? (
+                        <div className="mobile-verify-row">
+                          <button type="button" className="secondary-button" disabled={otpBusy} onClick={sendOtp}>
+                            {otpBusy ? 'Sending...' : 'Verify by SMS (optional)'}
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="mobile-verify-row">
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            autoComplete="one-time-code"
+                            maxLength={6}
+                            placeholder="6-digit code"
+                            value={otpCode}
+                            onChange={event => setOtpCode(event.target.value.replace(/\D/g, ''))}
+                          />
+                          <button type="button" className="secondary-button" disabled={otpBusy || otpCode.length !== 6} onClick={verifyOtp}>
+                            {otpBusy ? 'Checking...' : 'Verify'}
+                          </button>
+                          <button type="button" className="link-button" disabled={otpBusy} onClick={sendOtp}>
+                            Resend
+                          </button>
+                        </div>
+                      )}
+
+                    </div>
+
+                  )}
+
+                  {otpMessage && <small className="location-hint">{otpMessage}</small>}
+
+                  <small>
+                    Used only to update you about this complaint. It is never shown publicly.
+                  </small>
 
                 </div>
 
@@ -712,6 +941,15 @@ function ReportComplaint() {
                   </div>
 
                   <div className="detail-item">
+                    <span>Mobile</span>
+                    <strong>
+                      {usingSavedMobile
+                        ? profile.mobileMasked
+                        : (normalizeIndianMobile(formData.mobile) || formData.mobile)}
+                    </strong>
+                  </div>
+
+                  <div className="detail-item">
                     <span>Photos</span>
                     <strong>
                       {formData.images.length > 0
@@ -833,12 +1071,28 @@ function ReportComplaint() {
           </motion.div>
 
           <h2>
-            Complaint Submitted Successfully
+            {submittedModeration?.status === 'rejected'
+              ? 'Complaint Not Accepted'
+              : submittedModeration?.status === 'needs_review'
+                ? 'Complaint Submitted for Review'
+                : 'Complaint Submitted Successfully'}
           </h2>
 
           <p>
             Your complaint has been recorded.
           </p>
+
+          {submittedModeration?.status === 'needs_review' && (
+            <div className="moderation-notice">
+              An administrator will review it before it enters the processing queue. {submittedModeration.reason}
+            </div>
+          )}
+
+          {submittedModeration?.status === 'rejected' && (
+            <div className="moderation-notice rejected">
+              Reason: {submittedModeration.reason} If you believe this is a mistake, you can submit the complaint again with a clear description of the civic problem.
+            </div>
+          )}
 
 
           {/* Complaint ID */}

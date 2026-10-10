@@ -6,6 +6,7 @@ import { API_BASE_URL } from '../config/api'
 import CopyButton from '../components/CopyButton'
 import ImageGallery from '../components/ImageGallery'
 import LocationMap from '../components/LocationMap'
+import ModerationBadge from '../components/ModerationBadge'
 import { useAuth } from '../auth/useAuthContext'
 
 const COMPLAINT_ID_REGEX = /^CP\d{8}$/
@@ -264,7 +265,22 @@ function TrackComplaint() {
                 {complaint.status}
               </span>
 
+              <ModerationBadge status={complaint.moderationStatus} />
+
             </motion.div>
+
+            {complaint.moderationStatus === 'needs_review' && (
+              <motion.div className="moderation-notice" variants={itemVariants}>
+                This complaint is being reviewed by an administrator before it enters the processing queue.
+                {complaint.moderationReason ? ` ${complaint.moderationReason}` : ''}
+              </motion.div>
+            )}
+
+            {complaint.moderationStatus === 'rejected' && (
+              <motion.div className="moderation-notice rejected" variants={itemVariants}>
+                This complaint was not accepted. Reason: {complaint.moderationReason || 'It did not meet the complaint guidelines.'}
+              </motion.div>
+            )}
 
             {/* ==================================
                 COMPLAINT DETAILS

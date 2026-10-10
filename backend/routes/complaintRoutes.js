@@ -1,8 +1,13 @@
 const express = require('express')
 const multer = require('multer')
 const Complaint = require('../models/Complaint')
+const User = require('../models/User')
 const { requireAuth, requireRole } = require('../middleware/auth')
+const { rateLimit } = require('../middleware/rateLimit')
 const { uploadBuffer } = require('../utils/cloudinary')
+const { normalizeIndianMobile, maskMobile } = require('../utils/mobile')
+const { moderateComplaint } = require('../services/moderationEngine')
+const { notifyCitizen } = require('../services/notificationService')
 const {
   severityScore,
   computePriorityScore,
@@ -152,9 +157,45 @@ function toPublicComplaint(complaint) {
 
   const { citizenEmail, citizenId, ...publicFields } = obj
 
-  return publicFields
+  return toOwnerView(publicFields)
 
 }
+
+// Citizen-facing view of their OWN complaint: the mobile number is masked
+// and the admin audit trail (admin ids/emails) is removed.
+function toOwnerView(obj) {
+
+  const { citizenMobile, moderationHistory, ...rest } = obj
+
+  if (citizenMobile) rest.citizenMobileMasked = maskMobile(citizenMobile)
+
+  return rest
+
+}
+
+// ======================================
+// MODERATION GATE
+//
+// Only approved complaints belong in the processing workflow (Max Heap
+// ranking, FIFO queue, status updates, public statistics). Complaints
+// created before moderation existed have no moderationStatus and count
+// as approved — hence $nin rather than { moderationStatus: 'approved' }.
+// ======================================
+
+const IN_WORKFLOW = { moderationStatus: { $nin: ['needs_review', 'rejected'] } }
+
+function isInWorkflow(complaint) {
+  return complaint.moderationStatus !== 'needs_review' && complaint.moderationStatus !== 'rejected'
+}
+
+const DUPLICATE_WINDOW_MS = 10 * 60 * 1000
+
+const submitRateLimit = rateLimit({
+  name: 'complaint-submit',
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: 'You have submitted too many complaints in a short time. Please try again later.'
+})
 
 // Returns a complaint's live priority score without persisting it —
 // severity is fixed, but priority grows with waiting time on every read.
@@ -201,11 +242,13 @@ router.get('/stats', async (req, res) => {
 
   try {
 
-    const total = await Complaint.countDocuments()
-    const pending = await Complaint.countDocuments({ status: 'Pending' })
-    const inProgress = await Complaint.countDocuments({ status: 'In Progress' })
-    const resolved = await Complaint.countDocuments({ status: 'Resolved' })
-    const critical = await Complaint.countDocuments({ severity: 'Critical' })
+    // Counts cover complaints in the processing workflow only — complaints
+    // awaiting review or rejected as spam/abuse don't inflate the numbers.
+    const total = await Complaint.countDocuments(IN_WORKFLOW)
+    const pending = await Complaint.countDocuments({ ...IN_WORKFLOW, status: 'Pending' })
+    const inProgress = await Complaint.countDocuments({ ...IN_WORKFLOW, status: 'In Progress' })
+    const resolved = await Complaint.countDocuments({ ...IN_WORKFLOW, status: 'Resolved' })
+    const critical = await Complaint.countDocuments({ ...IN_WORKFLOW, severity: 'Critical' })
 
     res.json({ total, pending, inProgress, resolved, critical })
 
@@ -222,13 +265,19 @@ router.get('/stats', async (req, res) => {
 
 // ======================================
 // GET ALL COMPLAINTS (admin only — includes citizen contact info)
+//
+// Returns complaints in the processing workflow. Complaints awaiting
+// moderation or rejected live in the admin Moderation panel
+// (/api/moderation); pass ?moderation=all to include them here too.
 // ======================================
 
 router.get('/', requireAuth, requireRole('admin'), async (req, res) => {
 
   try {
 
-    const complaints = await Complaint.find().sort({ createdAt: -1 })
+    const filter = req.query.moderation === 'all' ? {} : IN_WORKFLOW
+
+    const complaints = await Complaint.find(filter).sort({ createdAt: -1 })
 
     res.json(complaints.map(withLivePriority))
 
@@ -253,7 +302,7 @@ router.get('/mine', requireAuth, async (req, res) => {
 
     const complaints = await Complaint.find({ citizenId: req.user.id }).sort({ createdAt: -1 })
 
-    res.json(complaints.map(withLivePriority))
+    res.json(complaints.map(complaint => toOwnerView(withLivePriority(complaint))))
 
   } catch (error) {
 
@@ -278,8 +327,9 @@ router.get('/priority', requireAuth, requireRole('admin'), async (req, res) => {
 
     const includeResolved = req.query.includeResolved === 'true'
 
-    const filter = includeResolved ? {} : { status: { $ne: 'Resolved' } }
+    const filter = includeResolved ? { ...IN_WORKFLOW } : { ...IN_WORKFLOW, status: { $ne: 'Resolved' } }
 
+    // Only moderation-approved complaints are pushed into the Max Heap.
     const complaints = await Complaint.find(filter)
 
     const rankedComplaints = rankByPriority(complaints)
@@ -353,6 +403,7 @@ router.get(
 
       const complaints =
         await Complaint.find({
+          ...IN_WORKFLOW,
           status: {
             $ne: 'Resolved'
           }
@@ -529,16 +580,21 @@ router.get(
 // SUBMIT COMPLAINT (citizen only, multipart with optional images)
 // ======================================
 
-router.post('/', requireAuth, requireRole('citizen'), upload.array('images', 5), async (req, res) => {
+router.post('/', requireAuth, requireRole('citizen'), submitRateLimit, upload.array('images', 5), async (req, res) => {
 
   try {
 
-    const { title, category, description, location, severity, latitude, longitude } = req.body
+    const { title, category, description, location, severity, latitude, longitude, mobile } = req.body
 
     if (!title || !category || !description || !location || !severity) {
 
       return res.status(400).json({ message: 'Please provide all required complaint details.' })
 
+    }
+
+    if ([title, description, location].some(value => typeof value !== 'string') ||
+        (mobile !== undefined && typeof mobile !== 'string')) {
+      return res.status(400).json({ message: 'Complaint details must be plain text.' })
     }
 
     if (!ALLOWED_CATEGORIES.includes(category)) {
@@ -559,6 +615,69 @@ router.post('/', requireAuth, requireRole('citizen'), upload.array('images', 5),
     if (longitudeValue === null) {
       return res.status(400).json({ message: 'Longitude must be a valid number between -180 and 180.' })
     }
+
+    // ==================================
+    // CITIZEN MOBILE NUMBER
+    //
+    // A number typed on the form is validated and normalized. When the
+    // form sends none, the number already saved on the citizen's account
+    // is reused, so it is never collected twice. Optional at the API
+    // level so older clients keep working; the form asks for it.
+    // ==================================
+
+    let citizenMobile
+
+    const hasMobileInput = typeof mobile === 'string' && mobile.trim() !== ''
+
+    if (hasMobileInput) {
+
+      citizenMobile = normalizeIndianMobile(mobile)
+
+      if (!citizenMobile) {
+        return res.status(400).json({
+          message: 'Please enter a valid 10-digit Indian mobile number (starting with 6, 7, 8 or 9).'
+        })
+      }
+
+    }
+
+    const citizen = await User.findById(req.user.id).select('mobile mobileVerified')
+
+    if (citizen) {
+
+      if (!citizenMobile) {
+
+        citizenMobile = citizen.mobile
+
+      } else if (!citizen.mobile || (!citizen.mobileVerified && citizen.mobile !== citizenMobile)) {
+
+        // Save the number to the profile for reuse. A VERIFIED profile
+        // number is never silently replaced by an unverified one.
+        await User.updateOne(
+          { _id: citizen._id },
+          { $set: { mobile: citizenMobile, mobileVerified: false }, $unset: { mobileVerifiedAt: 1 } }
+        )
+
+      }
+
+    }
+
+    const citizenMobileVerified = Boolean(
+      citizen && citizenMobile && citizen.mobileVerified && citizen.mobile === citizenMobile
+    )
+
+    // ==================================
+    // MODERATION (separate from priority)
+    // ==================================
+
+    const isDuplicate = Boolean(await Complaint.exists({
+      citizenId: req.user.id,
+      title,
+      description,
+      createdAt: { $gte: new Date(Date.now() - DUPLICATE_WINDOW_MS) }
+    }))
+
+    const moderation = moderateComplaint({ title, description, location, category }, { isDuplicate })
 
     // ==================================
     // UPLOAD IMAGES TO CLOUDINARY
@@ -591,6 +710,21 @@ router.post('/', requireAuth, requireRole('citizen'), upload.array('images', 5),
       citizenId: req.user.id,
       citizenName: req.user.name,
       citizenEmail: req.user.email,
+      citizenMobile,
+      citizenMobileVerified: citizenMobile ? citizenMobileVerified : undefined,
+
+      moderationStatus: moderation.status,
+      moderationReason: moderation.reason,
+      moderationFlags: moderation.flags,
+      moderationHistory: [
+        {
+          decision: moderation.status,
+          reason: moderation.reason,
+          actor: 'system',
+          timestamp: new Date()
+        }
+      ],
+      workflowEnteredAt: moderation.status === 'approved' ? new Date() : undefined,
 
       history: [
         {
@@ -604,9 +738,39 @@ router.post('/', requireAuth, requireRole('citizen'), upload.array('images', 5),
 
     await complaint.save()
 
+    // ==================================
+    // IN-APP NOTIFICATIONS (dedupe keys make these idempotent)
+    // ==================================
+
+    await notifyCitizen({ complaint, type: 'complaint_registered' })
+
+    const decisionNotification = {
+      approved: 'complaint_approved',
+      needs_review: 'complaint_under_review',
+      rejected: 'complaint_rejected'
+    }[moderation.status]
+
+    await notifyCitizen({ complaint, type: decisionNotification, reason: moderation.reason })
+
+    const responseMessage = {
+      approved: 'Complaint submitted successfully.',
+      needs_review: 'Complaint submitted. It will be reviewed by an administrator before processing.',
+      rejected: 'Complaint was not accepted.'
+    }[moderation.status]
+
+    const responseComplaint = complaint.toObject()
+
+    if (responseComplaint.citizenMobile) {
+      responseComplaint.citizenMobileMasked = maskMobile(responseComplaint.citizenMobile)
+    }
+
+    delete responseComplaint.citizenMobile
+    delete responseComplaint.moderationHistory
+
     res.status(201).json({
-      message: 'Complaint submitted successfully.',
-      complaint
+      message: responseMessage,
+      complaint: responseComplaint,
+      moderation: { status: moderation.status, reason: moderation.reason }
     })
 
   } catch (error) {
@@ -644,6 +808,14 @@ router.put('/:id/status', requireAuth, requireRole('admin'), validateComplaintId
       return res.status(404).json({ message: 'Complaint not found.' })
     }
 
+    if (!isInWorkflow(complaint)) {
+      return res.status(409).json({
+        message: complaint.moderationStatus === 'rejected'
+          ? 'This complaint was rejected during moderation and cannot be processed.'
+          : 'This complaint is awaiting moderation review. Approve it in the Moderation panel first.'
+      })
+    }
+
     const isRealTransition = complaint.status !== status
 
     complaint.status = status
@@ -666,6 +838,23 @@ router.put('/:id/status', requireAuth, requireRole('admin'), validateComplaintId
     }
 
     await complaint.save()
+
+    // Notify only on a genuine transition. Keyed by the new history
+    // entry's id, so a retried request (which creates no new entry)
+    // can't produce a duplicate notification.
+    const statusNotification = { 'In Progress': 'status_in_progress', Resolved: 'status_resolved' }[status]
+
+    if (isRealTransition && statusNotification) {
+
+      const entry = complaint.history[complaint.history.length - 1]
+
+      await notifyCitizen({
+        complaint,
+        type: statusNotification,
+        dedupeKey: `${complaint.id}:status:${entry._id}`
+      })
+
+    }
 
     res.json({ message: 'Complaint status updated successfully.', complaint })
 
