@@ -451,4 +451,423 @@ if (!IS_LOCAL) {
 
   })
 
+
+
+  // ----------------------------------------------------------
+  // SMS consent
+  // ----------------------------------------------------------
+
+  test('SMS consent: off by default, needs a mobile, can be granted and withdrawn', async () => {
+
+    const noMobile = await api('POST', '/api/auth/register', {
+      json: { name: 'Consent', email: 'consent-nomobile@test.local', password: 'secret1', smsConsent: true }
+    })
+    assert.equal(noMobile.status, 400)
+
+    const badType = await api('POST', '/api/auth/register', {
+      json: { name: 'Consent', email: 'consent-badtype@test.local', password: 'secret1', mobile: '9812345678', smsConsent: 'yes' }
+    })
+    assert.equal(badType.status, 400)
+
+    const defaultOff = await api('POST', '/api/auth/register', {
+      json: { name: 'Off', email: 'consent-off@test.local', password: 'secret1', mobile: '9812345678' }
+    })
+    assert.equal(defaultOff.status, 201)
+    assert.equal((await User.findOne({ email: 'consent-off@test.local' }).lean()).smsConsent, false)
+
+    const optedIn = await api('POST', '/api/auth/register', {
+      json: { name: 'On', email: 'consent-on@test.local', password: 'secret1', mobile: '9812345679', smsConsent: true }
+    })
+    assert.equal(optedIn.status, 201)
+
+    const token = optedIn.data.token
+    const me = await api('GET', '/api/auth/me', { token })
+    assert.equal(me.data.smsConsent, true)
+    assert.ok(me.data.smsConsentAt)
+    assert.equal(me.data.mobileMasked, '+91 ******5679')
+    assert.ok(!JSON.stringify(me.data).includes('9812345679'), 'full number never returned')
+    assert.equal(me.data.smsUpdatesAvailable, false, 'no provider configured in this test run')
+
+    const withdraw = await api('PUT', '/api/auth/me/sms-consent', { token, json: { consent: false } })
+    assert.equal(withdraw.status, 200)
+    assert.equal(withdraw.data.smsConsent, false)
+    assert.ok(withdraw.data.smsConsentWithdrawnAt)
+
+    const stored = await User.findOne({ email: 'consent-on@test.local' }).lean()
+    assert.equal(stored.smsConsent, false)
+    assert.ok(stored.smsConsentAt && stored.smsConsentWithdrawnAt)
+
+    assert.equal((await api('PUT', '/api/auth/me/sms-consent', { token, json: { consent: 'true' } })).status, 400)
+    assert.equal((await api('PUT', '/api/auth/me/sms-consent', { json: { consent: true } })).status, 401)
+    assert.equal((await api('PUT', '/api/auth/me/sms-consent', { token: tokenOf(admin), json: { consent: true } })).status, 403)
+
+    const lonely = await User.create({ name: 'No Mobile', email: 'consent-lonely@test.local', passwordHash: 'x', role: 'citizen' })
+    assert.equal((await api('PUT', '/api/auth/me/sms-consent', { token: tokenOf(lonely), json: { consent: true } })).status, 400)
+
+  })
+
+  test('with no SMS provider configured, notifications record not_configured and still work', async () => {
+    const { data } = await submit(citizenB, { title: 'Streetlight off', description: 'Streetlight not working on the lane behind the temple for three nights', category: 'Streetlight', location: 'Kothrud' })
+    const notes = await Notification.find({ complaintId: data.complaint.id }).lean()
+    assert.ok(notes.length >= 1)
+    assert.ok(notes.every(n => ['not_configured', 'not_requested'].includes(n.sms.status)))
+  })
+
+
+  // ----------------------------------------------------------
+  // SMS delivery against a FAKE local provider (never a real SMS)
+  // ----------------------------------------------------------
+
+  test('SMS: only consenting + verified citizens get messages; once per event; failures never undo the change', async () => {
+
+    const http = require('node:http')
+
+    const received = []
+    let mode = 'accept'
+
+    const fakeProvider = http.createServer((req, res) => {
+      let raw = ''
+      req.on('data', chunk => { raw += chunk })
+      req.on('end', () => {
+        received.push(JSON.parse(raw))
+        res.setHeader('Content-Type', 'application/json')
+        if (mode === 'accept') {
+          res.end(JSON.stringify({ type: 'success', message: `req-${received.length}` }))
+        } else {
+          res.statusCode = 400
+          res.end(JSON.stringify({ type: 'error', message: 'Invalid template' }))
+        }
+      })
+    })
+
+    await new Promise(resolve => fakeProvider.listen(0, '127.0.0.1', resolve))
+
+    const envBackup = { ...process.env }
+
+    Object.assign(process.env, {
+      SMS_PROVIDER: 'msg91',
+      MSG91_AUTH_KEY: 'fake-key',
+      MSG91_SENDER_ID: 'CIVPLS',
+      MSG91_FLOW_URL: `http://127.0.0.1:${fakeProvider.address().port}/flow`,
+      MSG91_TEMPLATE_REGISTERED: 't-registered',
+      MSG91_TEMPLATE_UNDER_REVIEW: 't-review',
+      MSG91_TEMPLATE_APPROVED: 't-approved',
+      MSG91_TEMPLATE_REJECTED: 't-rejected',
+      MSG91_TEMPLATE_IN_PROGRESS: 't-progress',
+      MSG91_TEMPLATE_RESOLVED: 't-resolved',
+      MSG91_TEMPLATE_REOPENED: 't-reopened',
+      SMS_WEBHOOK_SECRET: 'webhook-test-secret',
+      SMS_MAX_ATTEMPTS: '1'
+    })
+
+    async function settledSms(complaintId, type) {
+      for (let i = 0; i < 100; i++) {
+        const note = await Notification.findOne({ complaintId, type }).lean()
+        if (note && !['pending', 'sending'].includes(note.sms.status)) return note
+        await new Promise(resolve => setTimeout(resolve, 20))
+      }
+      throw new Error(`SMS for ${complaintId}/${type} never settled`)
+    }
+
+    try {
+
+      const consenting = await User.create({
+        name: 'Sms Yes', email: 'sms-yes@test.local', passwordHash: 'x', role: 'citizen',
+        mobile: '+919811111111', mobileVerified: true, smsConsent: true, smsConsentAt: new Date()
+      })
+      const declined = await User.create({
+        name: 'Sms No', email: 'sms-no@test.local', passwordHash: 'x', role: 'citizen',
+        mobile: '+919822222222', mobileVerified: true, smsConsent: false
+      })
+      const unverified = await User.create({
+        name: 'Sms Unverified', email: 'sms-unverified@test.local', passwordHash: 'x', role: 'citizen',
+        mobile: '+919833333333', mobileVerified: false, smsConsent: true
+      })
+
+      const issue = { title: 'Water leakage', description: 'Main water pipe leaking on the footpath outside building 7 since morning', category: 'Water', location: 'Aundh' }
+
+      // Registration SMS: one message, accepted (not "delivered")
+      const yes = await submit(consenting, issue)
+      assert.equal(yes.status, 201)
+      const registered = await settledSms(yes.data.complaint.id, 'complaint_registered')
+      assert.equal(registered.sms.status, 'accepted')
+      assert.equal(registered.sms.provider, 'msg91')
+      assert.ok(registered.sms.providerMessageId)
+      // The automatic "accepted" in-app note does not send a second SMS
+      assert.equal((await Notification.findOne({ complaintId: yes.data.complaint.id, type: 'complaint_approved' }).lean()).sms.status, 'not_requested')
+      assert.equal(received.length, 1)
+      assert.deepEqual(received[0].recipients, [{ mobiles: '919811111111', var1: yes.data.complaint.id }])
+      assert.equal(received[0].template_id, 't-registered')
+
+      // No consent / unverified: in-app notification yes, SMS no
+      const no = await submit(declined, { ...issue, location: 'Baner' })
+      assert.equal((await settledSms(no.data.complaint.id, 'complaint_registered')).sms.status, 'no_consent')
+      const unv = await submit(unverified, { ...issue, location: 'Wakad' })
+      assert.equal((await settledSms(unv.data.complaint.id, 'complaint_registered')).sms.status, 'unverified')
+      assert.equal(received.length, 1, 'nothing sent to non-consenting or unverified citizens')
+
+      // Status change: one SMS; unchanged status and retries send nothing more
+      const token = tokenOf(admin)
+      const id = yes.data.complaint.id
+      await api('PUT', `/api/complaints/${id}/status`, { token, json: { status: 'In Progress' } })
+      await api('PUT', `/api/complaints/${id}/status`, { token, json: { status: 'In Progress' } })
+      await settledSms(id, 'status_in_progress')
+      assert.equal(received.length, 2)
+      assert.equal(received[1].template_id, 't-progress')
+      assert.equal(await Notification.countDocuments({ complaintId: id, type: 'status_in_progress' }), 1)
+
+      // Pending -> Pending (unchanged): no notification, no SMS
+      await api('PUT', `/api/complaints/${no.data.complaint.id}/status`, { token, json: { status: 'Pending' } })
+      assert.equal(await Notification.countDocuments({ complaintId: no.data.complaint.id, type: 'status_reopened' }), 0)
+
+      // Provider failure: complaint update still succeeds and is stored
+      mode = 'fail'
+      const resolve = await api('PUT', `/api/complaints/${id}/status`, { token, json: { status: 'Resolved' } })
+      assert.equal(resolve.status, 200)
+      assert.equal((await Complaint.findOne({ id }).lean()).status, 'Resolved')
+      const failed = await settledSms(id, 'status_resolved')
+      assert.equal(failed.sms.status, 'failed')
+      assert.match(failed.sms.error, /Invalid template/)
+      mode = 'accept'
+
+      // Withdrawn consent applies to the very next message
+      await api('PUT', '/api/auth/me/sms-consent', { token: tokenOf(consenting), json: { consent: false } })
+      await api('PUT', `/api/complaints/${id}/status`, { token, json: { status: 'Pending' } })
+      assert.equal((await settledSms(id, 'status_reopened')).sms.status, 'no_consent')
+      assert.equal(received.length, 3, 'the failed attempt was the only other call')
+
+      // Delivery reports: secret required, only then "delivered"
+      const requestId = registered.sms.providerMessageId
+      const noSecret = await api('POST', '/api/sms/delivery-report', { json: { requestId, status: 'Delivered' } })
+      assert.equal(noSecret.status, 401)
+      const wrongSecret = await api('POST', '/api/sms/delivery-report?secret=nope', { json: { requestId, status: 'Delivered' } })
+      assert.equal(wrongSecret.status, 401)
+      assert.equal((await Notification.findById(registered._id).lean()).sms.status, 'accepted')
+
+      const report = await api('POST', '/api/sms/delivery-report?secret=webhook-test-secret', {
+        json: { data: JSON.stringify([{ requestId, report: [{ status: '1', number: '919811111111' }] }]) }
+      })
+      assert.equal(report.status, 200)
+      assert.equal(report.data.updated, 1)
+      const delivered = await Notification.findById(registered._id).lean()
+      assert.equal(delivered.sms.status, 'delivered')
+      assert.ok(delivered.sms.deliveredAt)
+
+      // A late "failed" report cannot overwrite a confirmed delivery
+      await api('POST', '/api/sms/delivery-report?secret=webhook-test-secret', { json: { requestId, status: 'failed' } })
+      assert.equal((await Notification.findById(registered._id).lean()).sms.status, 'delivered')
+
+      // Citizens see a status, never provider ids or numbers
+      const list = await api('GET', '/api/notifications', { token: tokenOf(consenting) })
+      const listed = list.data.notifications.find(n => n._id === String(registered._id))
+      assert.equal(listed.smsStatus, 'delivered')
+      assert.ok(!JSON.stringify(list.data).includes('919811111111'))
+      assert.ok(!JSON.stringify(list.data).includes(requestId))
+
+    } finally {
+
+      for (const key of Object.keys(process.env)) if (!(key in envBackup)) delete process.env[key]
+      Object.assign(process.env, envBackup)
+      await new Promise(resolve => fakeProvider.close(resolve))
+
+    }
+
+  })
+
+  test('delivery-report endpoint is disabled when no webhook secret is configured', async () => {
+    const { status } = await api('POST', '/api/sms/delivery-report', { json: { requestId: 'x', status: '1' } })
+    assert.equal(status, 404)
+  })
+
+
+  // ----------------------------------------------------------
+  // Suspicious-submission detection + admin review
+  // ----------------------------------------------------------
+
+  let flaggedId
+  let originalId
+
+  test('same-account near-duplicate is held for review with evidence; citizen gets a neutral notice', async () => {
+
+    const repeater = await User.create({ name: 'Repeat', email: 'repeat@test.local', passwordHash: 'x', role: 'citizen' })
+    const issue = { title: 'Broken footpath', description: 'Footpath tiles broken and uneven near the bakery, people tripping at night', category: 'Road', location: 'Model Colony Lane 3' }
+
+    const first = await submit(repeater, issue)
+    assert.equal(first.data.moderation.status, 'approved')
+    originalId = first.data.complaint.id
+
+    const second = await submit(repeater, { ...issue, description: issue.description + '!!' })
+    assert.equal(second.status, 201)
+    assert.equal(second.data.moderation.status, 'needs_review')
+    flaggedId = second.data.complaint.id
+
+    // Nothing internal leaks to the citizen
+    assert.equal(second.data.complaint.suspicion, undefined)
+    assert.equal(second.data.complaint.moderationFlags, undefined)
+    assert.match(second.data.moderation.reason, /No final decision has been made/)
+
+    const stored = await Complaint.findOne({ id: flaggedId }).lean()
+    assert.equal(stored.suspicion.level, 'review_required')
+    assert.equal(stored.suspicion.reviewStatus, 'pending')
+    assert.ok(stored.suspicion.detectedAt)
+    const signal = stored.suspicion.signals.find(s => s.rule === 'same_account_duplicate')
+    assert.deepEqual(signal.matchedComplaintIds, [originalId])
+    assert.ok(signal.evidence)
+
+    // Held complaints never reach the heap
+    const priority = await api('GET', '/api/complaints/priority', { token: tokenOf(admin) })
+    assert.ok(!priority.data.complaints.some(c => c.id === flaggedId))
+
+    const note = await Notification.findOne({ complaintId: flaggedId, type: 'complaint_under_review' }).lean()
+    assert.match(note.message, /requires additional review/)
+    assert.match(note.message, /No final decision has been made/)
+    assert.doesNotMatch(note.message, /fake|fraud|spam|abuse|suspicious/i)
+
+    const own = await api('GET', `/api/complaints/${flaggedId}`, { token: tokenOf(repeater) })
+    assert.equal(own.data.suspicion, undefined)
+    assert.match(own.data.moderationReason, /No final decision/)
+
+    // Admin sees the full evidence in the moderation queue
+    const queue = await api('GET', '/api/moderation/complaints?status=needs_review', { token: tokenOf(admin) })
+    const held = queue.data.complaints.find(c => c.id === flaggedId)
+    assert.ok(held.suspicion.signals.length > 0)
+
+  })
+
+  test('different citizens reporting the same issue are all accepted and linked, not flagged', async () => {
+
+    const reporters = await User.insertMany([1, 2, 3].map(n => ({ name: `Neighbour ${n}`, email: `neighbour${n}@test.local`, passwordHash: 'x', role: 'citizen' })))
+    const issue = { title: 'Streetlight not working', description: 'The streetlight outside gate 2 of Green Park society has been off for a week', category: 'Streetlight', location: 'Green Park Society, Baner' }
+
+    const ids = []
+
+    for (const reporter of reporters) {
+      const { data } = await submit(reporter, issue)
+      assert.equal(data.moderation.status, 'approved')
+      ids.push(data.complaint.id)
+    }
+
+    const last = await Complaint.findOne({ id: ids[2] }).lean()
+    assert.equal(last.suspicion.level, 'normal')
+    assert.equal(last.suspicion.flagged, false)
+    assert.deepEqual([...last.suspicion.relatedComplaintIds].sort(), ids.slice(0, 2).sort())
+
+  })
+
+  test('rapid submissions from one account are held for review', async () => {
+
+    const busy = await User.create({ name: 'Busy', email: 'busy@test.local', passwordHash: 'x', role: 'citizen' })
+    const issues = [
+      ['Garbage pile', 'Garbage not collected near the vegetable market for days', 'Garbage', 'Hadapsar'],
+      ['Leaking pipe', 'Water pipe leaking at the corner of the main road', 'Water', 'Kharadi'],
+      ['Blocked drain', 'Drain blocked and overflowing after the rain', 'Drainage', 'Viman Nagar'],
+      ['Signal off', 'Traffic signal at the junction is not working since morning', 'Traffic', 'Yerawada'],
+      ['Fallen tree', 'A tree branch has fallen across the lane blocking vehicles', 'Other', 'Kalyani Nagar']
+    ]
+
+    const outcomes = []
+
+    for (const [title, description, category, location] of issues) {
+      const { data } = await submit(busy, { title, description, category, location })
+      outcomes.push(data.moderation.status)
+    }
+
+    assert.deepEqual(outcomes.slice(0, 4), ['approved', 'approved', 'approved', 'approved'])
+    assert.equal(outcomes[4], 'needs_review')
+
+    const fifth = await Complaint.findOne({ citizenId: busy._id }).sort({ createdAt: -1 }).lean()
+    assert.ok(fifth.suspicion.signals.some(s => s.rule === 'rapid_submissions'))
+
+  })
+
+  test('review actions are admin-only', async () => {
+    for (const action of ['approve', 'dismiss', 'reject']) {
+      const anonymous = await api('POST', `/api/moderation/complaints/${flaggedId}/${action}`, { json: { reason: 'Some reason here' } })
+      assert.equal(anonymous.status, 401)
+      const citizen = await api('POST', `/api/moderation/complaints/${flaggedId}/${action}`, { token: tokenOf(citizenA), json: { reason: 'Some reason here' } })
+      assert.equal(citizen.status, 403)
+    }
+    assert.equal((await api('GET', '/api/moderation/complaints', { token: tokenOf(citizenA) })).status, 403)
+    assert.equal((await Complaint.findOne({ id: flaggedId }).lean()).moderationStatus, 'needs_review')
+  })
+
+  test('rejection needs a real reason written in words', async () => {
+    for (const reason of ['', 'no', '.....', '12345 678', '   ']) {
+      const { status } = await api('POST', `/api/moderation/complaints/${flaggedId}/reject`, { token: tokenOf(admin), json: { reason } })
+      assert.equal(status, 400, JSON.stringify(reason))
+    }
+  })
+
+  test('dismissing a false-positive flag admits the complaint once, audits it, and sends no accusation', async () => {
+
+    const token = tokenOf(admin)
+
+    const dismiss = await api('POST', `/api/moderation/complaints/${flaggedId}/dismiss`, { token, json: { note: 'Different spot on the same lane.' } })
+    assert.equal(dismiss.status, 200)
+
+    const again = await api('POST', `/api/moderation/complaints/${flaggedId}/dismiss`, { token, json: {} })
+    assert.equal(again.status, 409)
+
+    const stored = await Complaint.findOne({ id: flaggedId }).lean()
+    assert.equal(stored.moderationStatus, 'approved')
+    assert.equal(stored.suspicion.level, 'normal')
+    assert.equal(stored.suspicion.reviewStatus, 'dismissed')
+    assert.equal(stored.suspicion.reviewerEmail, 'admin@test.local')
+    assert.match(stored.suspicion.reviewReason, /false positive/)
+    assert.ok(stored.suspicion.signals.length > 0, 'original evidence is kept for the audit trail')
+    assert.equal(stored.moderationHistory.at(-1).actor, 'admin')
+    assert.ok(stored.workflowEnteredAt)
+
+    const notes = await Notification.find({ complaintId: flaggedId }).lean()
+    assert.equal(notes.filter(n => n.type === 'complaint_approved').length, 1)
+    assert.equal(notes.filter(n => n.type === 'complaint_rejected').length, 0)
+
+    const priority = await api('GET', '/api/complaints/priority', { token })
+    assert.ok(priority.data.complaints.some(c => c.id === flaggedId))
+
+  })
+
+  test('a confirmed-invalid decision is recorded only after an admin rejects with a reason', async () => {
+
+    const spammer = await User.create({ name: 'Promo', email: 'promo@test.local', passwordHash: 'x', role: 'citizen' })
+    const { data } = await submit(spammer, { title: 'Buy now', description: 'Click here for free money and cashback www.spam-offer.xyz', category: 'Other', location: 'Camp' })
+
+    assert.equal(data.moderation.status, 'needs_review', 'never auto-rejected')
+    const held = await Complaint.findOne({ id: data.complaint.id }).lean()
+    assert.equal(held.moderationStatus, 'needs_review')
+    assert.equal(held.suspicion.level, 'review_required')
+    assert.equal(await Notification.countDocuments({ complaintId: data.complaint.id, type: 'complaint_rejected' }), 0)
+
+    const reason = 'Advertising content, not a civic complaint.'
+    const reject = await api('POST', `/api/moderation/complaints/${data.complaint.id}/reject`, { token: tokenOf(admin), json: { reason } })
+    assert.equal(reject.status, 200)
+    const retry = await api('POST', `/api/moderation/complaints/${data.complaint.id}/reject`, { token: tokenOf(admin), json: { reason } })
+    assert.equal(retry.status, 409)
+
+    const stored = await Complaint.findOne({ id: data.complaint.id }).lean()
+    assert.equal(stored.suspicion.level, 'confirmed_invalid')
+    assert.equal(stored.suspicion.reviewReason, reason)
+
+    const notes = await Notification.find({ complaintId: data.complaint.id, type: 'complaint_rejected' }).lean()
+    assert.equal(notes.length, 1, 'one rejection notice despite the retry')
+    assert.match(notes[0].message, /was not approved/)
+    assert.match(notes[0].message, /Advertising content/)
+    assert.match(notes[0].message, /submit a new complaint/)
+
+    // The account itself is untouched
+    const account = await User.findById(spammer._id).lean()
+    assert.equal(account.role, 'citizen')
+
+  })
+
+  test('another citizen cannot read someone else\'s phone number through any complaint route', async () => {
+    for (const path of [`/api/complaints/${originalId}`, `/api/complaints/${originalId}/history`]) {
+      const { status, data } = await api('GET', path, { token: tokenOf(citizenB) })
+      assert.equal(status, 404)
+      assert.ok(!JSON.stringify(data).includes('+91'))
+    }
+    const mine = await api('GET', '/api/complaints/mine', { token: tokenOf(citizenA) })
+    assert.ok(mine.data.every(c => c.citizenMobile === undefined))
+  })
+
 }

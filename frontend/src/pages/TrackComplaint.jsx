@@ -278,7 +278,7 @@ function TrackComplaint() {
 
             {complaint.moderationStatus === 'rejected' && (
               <motion.div className="moderation-notice rejected" variants={itemVariants}>
-                This complaint was not accepted. Reason: {complaint.moderationReason || 'It did not meet the complaint guidelines.'}
+                This complaint was not approved. Reason: {complaint.moderationReason || 'It did not meet the complaint guidelines.'} If you believe this is a mistake, you can submit a new complaint with clarified details.
               </motion.div>
             )}
 

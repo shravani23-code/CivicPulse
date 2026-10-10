@@ -165,6 +165,65 @@ const complaintSchema = new mongoose.Schema({
 
   ],
 
+  // --------------------------------------
+  // SUSPICIOUS-SUBMISSION CHECK (services/suspicionDetector.js)
+  //
+  // Explains WHY a complaint was held for review. Purely advisory: it
+  // never rejects a complaint, never touches the account, and is never
+  // read by the priority engine (dsaEngines.js). Older complaints have
+  // no `suspicion` and count as "normal".
+  //
+  //   level: normal            no review-worthy signal
+  //          review_required   an administrator should look at it
+  //          confirmed_invalid an administrator reviewed it and rejected it
+  // --------------------------------------
+
+  suspicion: {
+
+    level: {
+      type: String,
+      enum: ['normal', 'review_required', 'confirmed_invalid']
+    },
+
+    flagged: {
+      type: Boolean
+    },
+
+    signals: [
+
+      {
+        _id: false,
+        rule: { type: String, required: true },
+        reason: { type: String, default: '' },
+        evidence: { type: String, default: '' },
+        matchedComplaintIds: [String]
+      }
+
+    ],
+
+    // Similar recent reports by OTHER citizens. Several people reporting
+    // the same streetlight is normal, so this is information for the
+    // admin, never a suspicion signal.
+    relatedComplaintIds: [String],
+
+    detectedAt: Date,
+
+    // not_required | pending | dismissed | approved | confirmed_invalid
+    reviewStatus: String,
+
+    reviewedAt: Date,
+
+    reviewedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+
+    reviewerEmail: String,
+
+    reviewReason: String
+
+  },
+
   // Set exactly once — the moment the complaint entered the processing
   // workflow (auto-approval at submission, or admin approval).
   workflowEnteredAt: {
@@ -198,5 +257,10 @@ const complaintSchema = new mongoose.Schema({
   }
 
 })
+
+// Support the suspicious-submission lookups (recent complaints by the
+// same citizen / in the same category). Non-unique, built in background.
+complaintSchema.index({ citizenId: 1, createdAt: -1 })
+complaintSchema.index({ category: 1, createdAt: -1 })
 
 module.exports = mongoose.model('Complaint', complaintSchema)

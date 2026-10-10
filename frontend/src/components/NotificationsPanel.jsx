@@ -2,6 +2,15 @@ import { useEffect, useState } from 'react'
 import { Bell, BellOff, RefreshCw, AlertTriangle } from 'lucide-react'
 import { useAuth } from '../auth/useAuthContext'
 
+// SMS copy states worth showing. "accepted" only means the SMS provider
+// took the message — it is never shown as delivered; "delivered" comes
+// from the provider's own delivery report.
+const SMS_STATUS_LABELS = {
+  accepted: 'SMS sent to the provider',
+  delivered: 'SMS delivered',
+  failed: 'SMS could not be sent'
+}
+
 // Citizen's persistent in-app notifications (stored on the backend, so
 // they survive refreshes and devices). They are fetched when the page
 // opens or Refresh is pressed — there is no live push. Opening a
@@ -199,6 +208,10 @@ function NotificationsPanel({ onOpenComplaint }) {
                 </span>
 
                 <span className="notification-item-message">{notification.message}</span>
+
+                {SMS_STATUS_LABELS[notification.smsStatus] && (
+                  <span className="notification-sms">{SMS_STATUS_LABELS[notification.smsStatus]}</span>
+                )}
 
               </button>
 

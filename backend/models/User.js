@@ -42,6 +42,22 @@ const userSchema = new mongoose.Schema({
     type: Date
   },
 
+  // Explicit opt-in to SMS status updates. Off unless the citizen ticks
+  // it; withdrawing keeps the timestamps as a record. Older accounts have
+  // no value, which counts as "not consented".
+  smsConsent: {
+    type: Boolean,
+    default: false
+  },
+
+  smsConsentAt: {
+    type: Date
+  },
+
+  smsConsentWithdrawnAt: {
+    type: Date
+  },
+
   createdAt: {
     type: Date,
     default: Date.now

@@ -9,6 +9,7 @@ const router = express.Router()
 const COMPLAINT_ID_REGEX = /^CP\d{8}$/
 const REVIEWABLE_FILTERS = ['needs_review', 'rejected']
 const MIN_REASON_LENGTH = 5
+const MIN_REASON_LETTERS = 4
 const MAX_REASON_LENGTH = 500
 
 // Admin only. The role comes from the signed JWT (requireRole), never
@@ -87,72 +88,106 @@ router.get('/complaints', async (req, res) => {
 
 
 // ======================================
-// APPROVE
+// APPROVE / DISMISS FLAG
 // POST /api/moderation/complaints/:id/approve   { note?: string }
+// POST /api/moderation/complaints/:id/dismiss   { note?: string }
+//
+// Both let the complaint into the processing workflow. "Dismiss" records
+// that the automatic flag was a false positive; "approve" records an
+// admin approval (also used to overturn a rejection). Neither sends the
+// citizen anything accusatory — they get the normal "accepted" notice.
 //
 // The conditional update only matches a complaint that is still under
-// review (or was rejected and is being overturned). Once approved it no
-// longer matches, so concurrent or repeated approvals cannot enter it
-// into the workflow twice — the losers get 409.
+// review (or, for approve, was rejected and is being overturned). Once
+// approved it no longer matches, so concurrent or repeated approvals
+// cannot enter it into the workflow twice — the losers get 409.
 // ======================================
 
-router.post('/complaints/:id/approve', validateComplaintId, async (req, res) => {
+function admitToWorkflow({ dismiss }) {
 
-  try {
+  return async (req, res) => {
 
-    const note = cleanReason(req.body && req.body.note).slice(0, MAX_REASON_LENGTH)
-    const now = new Date()
+    try {
 
-    const complaint = await Complaint.findOneAndUpdate(
-      { id: req.params.id, moderationStatus: { $in: ['needs_review', 'rejected'] } },
-      {
-        $set: {
-          moderationStatus: 'approved',
-          moderationReason: note,
-          workflowEnteredAt: now
+      const note = cleanReason(req.body && req.body.note).slice(0, MAX_REASON_LENGTH)
+      const now = new Date()
+
+      const auditReason = dismiss
+        ? `Automatic flag dismissed as a false positive.${note ? ` ${note}` : ''}`
+        : note
+
+      const complaint = await Complaint.findOneAndUpdate(
+        {
+          id: req.params.id,
+          moderationStatus: dismiss ? 'needs_review' : { $in: ['needs_review', 'rejected'] }
         },
-        $push: {
-          moderationHistory: {
-            decision: 'approved',
-            reason: note,
-            actor: 'admin',
-            adminId: req.user.id,
-            adminEmail: req.user.email,
-            timestamp: now
+        {
+          $set: {
+            moderationStatus: 'approved',
+            moderationReason: auditReason,
+            workflowEnteredAt: now,
+            'suspicion.level': 'normal',
+            'suspicion.reviewStatus': dismiss ? 'dismissed' : 'approved',
+            'suspicion.reviewedAt': now,
+            'suspicion.reviewedBy': req.user.id,
+            'suspicion.reviewerEmail': req.user.email,
+            'suspicion.reviewReason': auditReason
           },
-          history: {
-            status: 'Pending',
-            timestamp: now,
-            description: 'Complaint approved after review and entered the processing queue.'
+          $push: {
+            moderationHistory: {
+              decision: 'approved',
+              reason: auditReason,
+              actor: 'admin',
+              adminId: req.user.id,
+              adminEmail: req.user.email,
+              timestamp: now
+            },
+            history: {
+              status: 'Pending',
+              timestamp: now,
+              description: 'Complaint approved after review and entered the processing queue.'
+            }
           }
-        }
-      },
-      { returnDocument: 'after' }
-    )
+        },
+        { returnDocument: 'after' }
+      )
 
-    if (!complaint) {
-      return conflictResponse(res, req.params.id, 'approved')
+      if (!complaint) {
+        return conflictResponse(res, req.params.id, dismiss ? 'dismissed' : 'approved')
+      }
+
+      const decision = complaint.moderationHistory[complaint.moderationHistory.length - 1]
+
+      // Keyed by this decision's audit entry: one notification (and at
+      // most one SMS) per decision, however often the request is retried.
+      await notifyCitizen({
+        complaint,
+        type: 'complaint_approved',
+        dedupeKey: `${complaint.id}:moderation:${decision._id}`
+      })
+
+      res.json({
+        message: dismiss
+          ? `Flag dismissed. Complaint ${complaint.id} added to the processing queue.`
+          : `Complaint ${complaint.id} approved and added to the processing queue.`,
+        complaint
+      })
+
+    } catch (error) {
+
+      console.error('Moderation approve error:', error)
+
+      res.status(500).json({ message: dismiss ? 'Failed to dismiss the flag.' : 'Failed to approve complaint.' })
+
     }
-
-    const decision = complaint.moderationHistory[complaint.moderationHistory.length - 1]
-
-    await notifyCitizen({
-      complaint,
-      type: 'complaint_approved',
-      dedupeKey: `${complaint.id}:moderation:${decision._id}`
-    })
-
-    res.json({ message: `Complaint ${complaint.id} approved and added to the processing queue.`, complaint })
-
-  } catch (error) {
-
-    console.error('Moderation approve error:', error)
-
-    res.status(500).json({ message: 'Failed to approve complaint.' })
 
   }
 
-})
+}
+
+router.post('/complaints/:id/approve', validateComplaintId, admitToWorkflow({ dismiss: false }))
+
+router.post('/complaints/:id/dismiss', validateComplaintId, admitToWorkflow({ dismiss: true }))
 
 
 // ======================================
@@ -166,9 +201,13 @@ router.post('/complaints/:id/reject', validateComplaintId, async (req, res) => {
 
     const reason = cleanReason(req.body && req.body.reason)
 
-    if (reason.length < MIN_REASON_LENGTH || reason.length > MAX_REASON_LENGTH) {
+    // The reason is shown to the citizen, so it must be real text, not
+    // filler like "....." or "12345".
+    const letters = (reason.match(/\p{L}/gu) || []).length
+
+    if (reason.length < MIN_REASON_LENGTH || reason.length > MAX_REASON_LENGTH || letters < MIN_REASON_LETTERS) {
       return res.status(400).json({
-        message: `Please give the citizen a reason for rejection (${MIN_REASON_LENGTH}-${MAX_REASON_LENGTH} characters).`
+        message: `Please give the citizen a clear reason for rejection (${MIN_REASON_LENGTH}-${MAX_REASON_LENGTH} characters, written in words).`
       })
     }
 
@@ -179,7 +218,14 @@ router.post('/complaints/:id/reject', validateComplaintId, async (req, res) => {
       {
         $set: {
           moderationStatus: 'rejected',
-          moderationReason: reason
+          moderationReason: reason,
+          // Only an administrator can confirm a complaint is invalid.
+          'suspicion.level': 'confirmed_invalid',
+          'suspicion.reviewStatus': 'confirmed_invalid',
+          'suspicion.reviewedAt': now,
+          'suspicion.reviewedBy': req.user.id,
+          'suspicion.reviewerEmail': req.user.email,
+          'suspicion.reviewReason': reason
         },
         $push: {
           moderationHistory: {
@@ -206,6 +252,7 @@ router.post('/complaints/:id/reject', validateComplaintId, async (req, res) => {
 
     const decision = complaint.moderationHistory[complaint.moderationHistory.length - 1]
 
+    // Sent only now that the decision is persisted.
     await notifyCitizen({
       complaint,
       type: 'complaint_rejected',

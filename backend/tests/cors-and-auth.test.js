@@ -269,7 +269,10 @@ test('moderation: genuine civic complaint is approved', () => {
   assert.equal(result.status, 'approved')
 })
 
-test('moderation: spam is rejected, ambiguous text goes to review', () => {
-  assert.equal(moderateComplaint({ title: 'Buy now', description: 'Click here for free money www.spam.xyz' }).status, 'rejected')
+test('moderation: never rejects on its own — spam and ambiguous text go to admin review', () => {
+  const spam = moderateComplaint({ title: 'Buy now', description: 'Click here for free money www.spam.xyz' })
+  assert.equal(spam.status, 'needs_review')
+  assert.ok(spam.flags.includes('promotional_content'))
+  assert.equal(moderateComplaint({ title: 'asdfgh', description: 'qwrtyp zxcvbn' }).status, 'needs_review')
   assert.equal(moderateComplaint({ title: 'Garbage', description: 'Garbage everywhere, visit our site www.x.com' }).status, 'needs_review')
 })

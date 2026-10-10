@@ -132,7 +132,7 @@ function ComplaintDetailsModal({ complaint, onClose, isAdmin = false, onStatusCh
 
             {complaint.moderationStatus === 'rejected' && (
               <div className="moderation-notice rejected">
-                This complaint was not accepted. Reason: {complaint.moderationReason || 'It did not meet the complaint guidelines.'}
+                This complaint was not approved. Reason: {complaint.moderationReason || 'It did not meet the complaint guidelines.'} If you believe this is a mistake, you can submit a new complaint with clarified details.
               </div>
             )}
 
