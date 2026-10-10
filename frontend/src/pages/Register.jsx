@@ -15,6 +15,7 @@ function Register() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [mobile, setMobile] = useState('')
+  const [smsConsent, setSmsConsent] = useState(false)
   const [error, setError] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
 
@@ -41,7 +42,7 @@ function Register() {
 
     try {
 
-      await register(name.trim(), email.trim(), password, trimmedMobile)
+      await register(name.trim(), email.trim(), password, trimmedMobile, Boolean(trimmedMobile) && smsConsent)
 
       toast.success('Account created! Welcome to CivicPulse.')
 
@@ -136,6 +137,23 @@ function Register() {
             <small id="register-mobile-hint" className="field-hint">
               10-digit Indian mobile number. Saved to your profile so you don't need to re-enter it when reporting a complaint; only administrators handling your complaint can see it.
             </small>
+          </div>
+
+          <div className="form-group">
+            <label className="consent-option">
+              <input
+                type="checkbox"
+                checked={smsConsent && Boolean(mobile.trim())}
+                disabled={!mobile.trim()}
+                onChange={event => setSmsConsent(event.target.checked)}
+              />
+              <span>
+                Send me SMS updates about my complaints <span className="optional-label">(optional)</span>
+                <small className="field-hint">
+                  Short status messages only (registered, reviewed, resolved) — never addresses or descriptions. You can turn this off at any time under My Complaints.
+                </small>
+              </span>
+            </label>
           </div>
 
           {error && <div className="track-error">{error}</div>}

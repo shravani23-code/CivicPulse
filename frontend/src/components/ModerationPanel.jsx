@@ -29,7 +29,27 @@ const FLAG_LABELS = {
   no_civic_terms: 'No civic terms found',
   possible_duplicate: 'Possible duplicate',
   meaningless_text: 'Meaningless text',
-  too_little_detail: 'Very short description'
+  too_little_detail: 'Very short description',
+  same_account_duplicate: 'Repeat from same account',
+  rapid_submissions: 'Many submissions quickly',
+  unusable_location: 'Unusable location',
+  content_check: 'Content check'
+}
+
+// Detector rule -> admin-facing label (see backend suspicionDetector.js)
+const SIGNAL_LABELS = {
+  same_account_duplicate: 'Possible repeat from the same account',
+  rapid_submissions: 'Many complaints from one account in a short time',
+  unusable_location: 'Location cannot be acted on',
+  content_check: 'Content check'
+}
+
+const REVIEW_STATUS_LABELS = {
+  pending: 'Awaiting review',
+  dismissed: 'Flag dismissed (false positive)',
+  approved: 'Approved by admin',
+  confirmed_invalid: 'Confirmed invalid by admin',
+  not_required: 'No review needed'
 }
 
 // Admin section for complaints held by moderation. Approving moves a
@@ -119,8 +139,10 @@ function ModerationPanel({ onWorkflowChange }) {
     }
 
     const confirmText = action === 'reject'
-      ? `Reject complaint ${complaint.id}?\n\nThe citizen will be notified with this reason:\n"${trimmedReason}"`
-      : tab === 'rejected'
+      ? `Reject complaint ${complaint.id}?\n\nThis is a final decision. The citizen will be notified with this reason:\n"${trimmedReason}"`
+      : action === 'dismiss'
+        ? `Dismiss the automatic flag on ${complaint.id} as a false positive?\n\nIt will enter the priority queue and the citizen will get the normal "accepted" update.`
+        : tab === 'rejected'
         ? `Overturn the rejection and approve complaint ${complaint.id}?\n\nIt will enter the priority queue and the citizen will be notified.`
         : `Approve complaint ${complaint.id}?\n\nIt will enter the priority queue and the citizen will be notified.`
 
@@ -142,7 +164,7 @@ function ModerationPanel({ onWorkflowChange }) {
 
       fetchQueue()
 
-      if (action === 'approve' && onWorkflowChange) onWorkflowChange()
+      if (action !== 'reject' && onWorkflowChange) onWorkflowChange()
 
     } catch (actionError) {
 
@@ -173,7 +195,7 @@ function ModerationPanel({ onWorkflowChange }) {
             Complaint Review
             {counts?.needsReview > 0 && <span className="notification-count">{counts.needsReview}</span>}
           </h2>
-          <p>Complaints held back from the priority queue until an administrator decides.</p>
+          <p>Complaints held back from the priority queue until an administrator decides. Only an administrator can reject a complaint.</p>
         </div>
 
         <button
@@ -257,9 +279,56 @@ function ModerationPanel({ onWorkflowChange }) {
 
                   <div className="moderation-details">
 
-                    <div className="moderation-reason">
-                      <strong>Moderation reason:</strong> {complaint.moderationReason || '—'}
+                    <div className="result-grid">
+                      <div className="result-item"><span>Complaint status</span><strong>{complaint.status || 'Pending'}</strong></div>
+                      <div className="result-item"><span>Moderation</span><strong>{(complaint.moderationStatus || 'approved').replace('_', ' ')}</strong></div>
+                      {complaint.suspicion?.reviewStatus && (
+                        <div className="result-item">
+                          <span>Flag review</span>
+                          <strong>{REVIEW_STATUS_LABELS[complaint.suspicion.reviewStatus] || complaint.suspicion.reviewStatus}</strong>
+                        </div>
+                      )}
                     </div>
+
+                    {complaint.suspicion?.signals?.length > 0 ? (
+                      <div className="suspicion-signals">
+                        <span>Why it was held for review</span>
+                        <ul>
+                          {complaint.suspicion.signals.map(signal => (
+                            <li key={signal.rule}>
+                              <strong>{SIGNAL_LABELS[signal.rule] || signal.rule}:</strong> {signal.reason}
+                              {signal.evidence && <small>Evidence: {signal.evidence}</small>}
+                              {signal.matchedComplaintIds?.length > 0 && (
+                                <small>
+                                  Matching complaints:{' '}
+                                  {signal.matchedComplaintIds.map(id => <code key={id} className="complaint-ref">{id}</code>)}
+                                </small>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                        <small className="field-hint">
+                          These are automatic checks, not a finding of wrongdoing. Dismiss the flag if it does not apply.
+                        </small>
+                      </div>
+                    ) : (
+                      <div className="moderation-reason">
+                        <strong>{tab === 'rejected' ? 'Rejection reason:' : 'Moderation reason:'}</strong> {complaint.moderationReason || '—'}
+                      </div>
+                    )}
+
+                    {tab === 'rejected' && complaint.suspicion?.signals?.length > 0 && complaint.moderationReason && (
+                      <div className="moderation-reason">
+                        <strong>Rejection reason:</strong> {complaint.moderationReason}
+                      </div>
+                    )}
+
+                    {complaint.suspicion?.relatedComplaintIds?.length > 0 && (
+                      <div className="suspicion-related">
+                        Similar recent reports by other citizens (not a suspicion signal):{' '}
+                        {complaint.suspicion.relatedComplaintIds.map(id => <code key={id} className="complaint-ref">{id}</code>)}
+                      </div>
+                    )}
 
                     {complaint.moderationFlags?.length > 0 && (
                       <div className="moderation-flags">
@@ -331,6 +400,12 @@ function ModerationPanel({ onWorkflowChange }) {
                       {tab === 'needs_review' && (
                         <button type="button" className="secondary-button" disabled={Boolean(busyId)} onClick={() => decide(complaint, 'reject')}>
                           {isBusy ? 'Saving...' : 'Reject'}
+                        </button>
+                      )}
+
+                      {tab === 'needs_review' && complaint.suspicion?.signals?.length > 0 && (
+                        <button type="button" className="secondary-button" disabled={Boolean(busyId)} onClick={() => decide(complaint, 'dismiss')}>
+                          {isBusy ? 'Saving...' : 'Dismiss Flag'}
                         </button>
                       )}
 

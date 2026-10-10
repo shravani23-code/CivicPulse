@@ -9,6 +9,7 @@ import StatusTabs from '../components/StatusTabs'
 import ComplaintDetailsModal from '../components/ComplaintDetailsModal'
 import CopyButton from '../components/CopyButton'
 import NotificationsPanel from '../components/NotificationsPanel'
+import SmsPreferences from '../components/SmsPreferences'
 import ModerationBadge from '../components/ModerationBadge'
 
 function statusToClass(status) {
@@ -103,6 +104,8 @@ function MyComplaints() {
       {loading && <div className="admin-message">Loading your complaints...</div>}
 
       {error && <div className="track-error">{error}</div>}
+
+      <SmsPreferences />
 
       <NotificationsPanel
         onOpenComplaint={complaintId => {

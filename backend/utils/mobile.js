@@ -42,4 +42,15 @@ function maskMobile(mobile) {
 
 }
 
-module.exports = { normalizeIndianMobile, maskMobile }
+// "+919876543210" -> "919876543210": country code + number, no "+",
+// the form MSG91 expects in `mobiles`. Null for anything not stored in
+// the normalized form.
+function toMsg91Number(mobile) {
+
+  if (typeof mobile !== 'string' || !/^\+91[6-9]\d{9}$/.test(mobile)) return null
+
+  return mobile.slice(1)
+
+}
+
+module.exports = { normalizeIndianMobile, maskMobile, toMsg91Number }

@@ -58,18 +58,37 @@ const notificationSchema = new mongoose.Schema({
   },
 
   sms: {
-    // not_configured | no_mobile | unverified | pending | accepted | failed
-    // "accepted" = provider accepted it for sending; NOT a delivery receipt.
+    // Not sent:  not_configured | template_missing | not_requested |
+    //            no_consent | no_mobile | unverified
+    // Sending:   pending (queued) -> sending
+    // Result:    accepted  = provider accepted it for sending (NOT delivery)
+    //            delivered = confirmed by a provider delivery report only
+    //            failed    = provider rejected it, retries exhausted, or a
+    //                        delivery report said it failed
     status: {
       type: String,
       default: 'not_configured'
     },
 
-    providerMessageId: String,
+    provider: String,
+
+    providerMessageId: {
+      type: String,
+      index: { sparse: true }
+    },
+
+    // Raw status from the last provider delivery report, for auditing.
+    providerStatus: String,
+
+    attempts: Number,
 
     error: String,
 
-    attemptedAt: Date
+    attemptedAt: Date,
+
+    deliveredAt: Date,
+
+    lastReportAt: Date
   },
 
   createdAt: {

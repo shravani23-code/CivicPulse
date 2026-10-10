@@ -7,6 +7,7 @@ const { rateLimit } = require('../middleware/rateLimit')
 const { uploadBuffer } = require('../utils/cloudinary')
 const { normalizeIndianMobile, maskMobile } = require('../utils/mobile')
 const { moderateComplaint } = require('../services/moderationEngine')
+const { assessSubmission } = require('../services/suspicionDetector')
 const { notifyCitizen } = require('../services/notificationService')
 const {
   severityScore,
@@ -165,11 +166,19 @@ function toPublicComplaint(complaint) {
 
 // Citizen-facing view of their OWN complaint: the mobile number is masked
 // and the admin audit trail (admin ids/emails) is removed.
+const CITIZEN_REVIEW_NOTE =
+  'This complaint needs additional review because it resembles an existing report or requires clarification. No final decision has been made.'
+
 function toOwnerView(obj) {
 
-  const { citizenMobile, moderationHistory, ...rest } = obj
+  const { citizenMobile, moderationHistory, suspicion, moderationFlags, ...rest } = obj
 
   if (citizenMobile) rest.citizenMobileMasked = maskMobile(citizenMobile)
+
+  // The detector's internal reasons/evidence are for administrators. The
+  // citizen gets a neutral note while under review, and the admin's
+  // recorded reason once a final decision is made.
+  if (rest.moderationStatus === 'needs_review') rest.moderationReason = CITIZEN_REVIEW_NOTE
 
   return rest
 
@@ -189,8 +198,6 @@ const IN_WORKFLOW = { moderationStatus: { $nin: ['needs_review', 'rejected'] } }
 function isInWorkflow(complaint) {
   return complaint.moderationStatus !== 'needs_review' && complaint.moderationStatus !== 'rejected'
 }
-
-const DUPLICATE_WINDOW_MS = 10 * 60 * 1000
 
 const submitRateLimit = rateLimit({
   name: 'complaint-submit',
@@ -696,17 +703,28 @@ router.post('/', requireAuth, requireRole('citizen'), submitRateLimit, upload.ar
     )
 
     // ==================================
-    // MODERATION (separate from priority)
+    // MODERATION + SUSPICIOUS-SUBMISSION CHECK (separate from priority)
+    //
+    // Content checks plus duplicate / burst / location rules. Any review
+    // signal holds the complaint for an administrator; nothing here ever
+    // rejects a complaint or changes its priority.
     // ==================================
 
-    const isDuplicate = Boolean(await Complaint.exists({
-      citizenId: req.user.id,
-      title,
-      description,
-      createdAt: { $gte: new Date(Date.now() - DUPLICATE_WINDOW_MS) }
-    }))
+    const contentCheck = moderateComplaint({ title, description })
 
-    const moderation = moderateComplaint({ title, description, location, category }, { isDuplicate })
+    const suspicion = await assessSubmission(Complaint, {
+      candidate: { title, description, category, location, latitude: latitudeValue, longitude: longitudeValue },
+      citizenId: req.user.id,
+      moderation: contentCheck
+    })
+
+    const moderation = suspicion.flagged
+      ? {
+          status: 'needs_review',
+          reason: suspicion.signals.map(signal => signal.reason).join(' '),
+          flags: [...new Set([...contentCheck.flags, ...suspicion.signals.map(signal => signal.rule)])]
+        }
+      : { status: 'approved', reason: '', flags: contentCheck.flags }
 
     // ==================================
     // UPLOAD IMAGES TO CLOUDINARY
@@ -745,6 +763,7 @@ router.post('/', requireAuth, requireRole('citizen'), submitRateLimit, upload.ar
       moderationStatus: moderation.status,
       moderationReason: moderation.reason,
       moderationFlags: moderation.flags,
+      suspicion,
       moderationHistory: [
         {
           decision: moderation.status,
@@ -771,21 +790,21 @@ router.post('/', requireAuth, requireRole('citizen'), submitRateLimit, upload.ar
     // IN-APP NOTIFICATIONS (dedupe keys make these idempotent)
     // ==================================
 
-    await notifyCitizen({ complaint, type: 'complaint_registered' })
+    // One SMS per submission: "registered" for a normal complaint, the
+    // neutral "needs additional review" for a held one.
+    const heldForReview = moderation.status === 'needs_review'
 
-    const decisionNotification = {
-      approved: 'complaint_approved',
-      needs_review: 'complaint_under_review',
-      rejected: 'complaint_rejected'
-    }[moderation.status]
+    await notifyCitizen({ complaint, type: 'complaint_registered', sms: !heldForReview })
 
-    await notifyCitizen({ complaint, type: decisionNotification, reason: moderation.reason })
+    await notifyCitizen({
+      complaint,
+      type: heldForReview ? 'complaint_under_review' : 'complaint_approved',
+      sms: heldForReview
+    })
 
-    const responseMessage = {
-      approved: 'Complaint submitted successfully.',
-      needs_review: 'Complaint submitted. It will be reviewed by an administrator before processing.',
-      rejected: 'Complaint was not accepted.'
-    }[moderation.status]
+    const responseMessage = heldForReview
+      ? 'Complaint submitted. It needs a quick review by an administrator before processing. No final decision has been made.'
+      : 'Complaint submitted successfully.'
 
     const responseComplaint = complaint.toObject()
 
@@ -793,13 +812,10 @@ router.post('/', requireAuth, requireRole('citizen'), submitRateLimit, upload.ar
       responseComplaint.citizenMobileMasked = maskMobile(responseComplaint.citizenMobile)
     }
 
-    delete responseComplaint.citizenMobile
-    delete responseComplaint.moderationHistory
-
     res.status(201).json({
       message: responseMessage,
-      complaint: responseComplaint,
-      moderation: { status: moderation.status, reason: moderation.reason }
+      complaint: toOwnerView(responseComplaint),
+      moderation: { status: moderation.status, reason: heldForReview ? CITIZEN_REVIEW_NOTE : '' }
     })
 
   } catch (error) {

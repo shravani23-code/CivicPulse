@@ -8,10 +8,11 @@ const { requireAuth, requireRole } = require('../middleware/auth')
 const { rateLimit } = require('../middleware/rateLimit')
 const { normalizeIndianMobile, maskMobile } = require('../utils/mobile')
 
+const { isSmsConfigured, isSmsKindEnabled, sendSms } = require('../services/smsService')
+
 const MAX_NAME_LENGTH = 100
 const MAX_EMAIL_LENGTH = 254
 const MAX_PASSWORD_LENGTH = 128
-const { isSmsConfigured, sendSms } = require('../services/smsService')
 
 const router = express.Router()
 
@@ -53,7 +54,7 @@ router.post('/register', async (req, res) => {
 
   try {
 
-    const { name, email, password, mobile } = req.body || {}
+    const { name, email, password, mobile, smsConsent } = req.body || {}
 
     // Type checks first: a non-string value (e.g. an object in a crafted
     // request) must get a 400, never reach .trim()/.toLowerCase() or a query.
@@ -99,6 +100,15 @@ router.post('/register', async (req, res) => {
 
     }
 
+    if (smsConsent !== undefined && typeof smsConsent !== 'boolean') {
+      return res.status(400).json({ message: 'SMS consent must be true or false.' })
+    }
+
+    // Consent only means something together with a number to send to.
+    if (smsConsent === true && !normalizedMobile) {
+      return res.status(400).json({ message: 'Add a mobile number to receive SMS updates, or untick the SMS option.' })
+    }
+
     const normalizedEmail = email.trim().toLowerCase()
 
     const existingUser = await User.findOne({ email: normalizedEmail })
@@ -114,7 +124,9 @@ router.post('/register', async (req, res) => {
       email: normalizedEmail,
       passwordHash,
       role: 'citizen',
-      ...(normalizedMobile ? { mobile: normalizedMobile, mobileVerified: false } : {})
+      ...(normalizedMobile ? { mobile: normalizedMobile, mobileVerified: false } : {}),
+      smsConsent: smsConsent === true,
+      ...(smsConsent === true ? { smsConsentAt: new Date() } : {})
     })
 
     const token = issueToken(user)
@@ -200,6 +212,22 @@ router.post('/login', async (req, res) => {
 // number ever leaving the server (only a masked form is returned).
 // ======================================
 
+function smsProfile(user) {
+
+  return {
+    hasMobile: Boolean(user.mobile),
+    mobileMasked: maskMobile(user.mobile),
+    mobileVerified: Boolean(user.mobile && user.mobileVerified),
+    smsConsent: Boolean(user.smsConsent),
+    smsConsentAt: user.smsConsent ? user.smsConsentAt || null : null,
+    smsConsentWithdrawnAt: user.smsConsentWithdrawnAt || null,
+    // True only when status-update SMS can genuinely be sent right now.
+    smsUpdatesAvailable: isSmsConfigured(),
+    smsVerificationAvailable: isSmsKindEnabled('otp')
+  }
+
+}
+
 router.get('/me', requireAuth, async (req, res) => {
 
   try {
@@ -210,13 +238,7 @@ router.get('/me', requireAuth, async (req, res) => {
       return res.status(404).json({ message: 'Account not found.' })
     }
 
-    res.json({
-      user: publicUser(user),
-      hasMobile: Boolean(user.mobile),
-      mobileMasked: maskMobile(user.mobile),
-      mobileVerified: Boolean(user.mobile && user.mobileVerified),
-      smsVerificationAvailable: isSmsConfigured()
-    })
+    res.json({ user: publicUser(user), ...smsProfile(user) })
 
   } catch (error) {
 
@@ -227,6 +249,69 @@ router.get('/me', requireAuth, async (req, res) => {
   }
 
 })
+
+
+// ======================================
+// SMS UPDATES CONSENT (citizen)
+// PUT /api/auth/me/sms-consent   { consent: true | false }
+//
+// Opt in or withdraw at any time. Granting needs a mobile number on the
+// account; withdrawing always works and takes effect for every SMS not
+// yet sent. Both moments are timestamped.
+// ======================================
+
+router.put(
+  '/me/sms-consent',
+  requireAuth,
+  requireRole('citizen'),
+  rateLimit({ name: 'sms-consent', windowMs: 15 * 60 * 1000, max: 20, message: 'Too many changes. Please try again later.' }),
+  async (req, res) => {
+
+    try {
+
+      const consent = req.body ? req.body.consent : undefined
+
+      if (typeof consent !== 'boolean') {
+        return res.status(400).json({ message: 'consent must be true or false.' })
+      }
+
+      const user = await User.findById(req.user.id)
+
+      if (!user) {
+        return res.status(404).json({ message: 'Account not found.' })
+      }
+
+      if (consent && !user.mobile) {
+        return res.status(400).json({ message: 'Add a mobile number to your account before turning on SMS updates.' })
+      }
+
+      // Idempotent: repeating the current choice keeps its timestamp.
+      if (consent !== Boolean(user.smsConsent)) {
+
+        user.smsConsent = consent
+
+        if (consent) user.smsConsentAt = new Date()
+        else user.smsConsentWithdrawnAt = new Date()
+
+        await user.save()
+
+      }
+
+      res.json({
+        message: consent ? 'SMS updates turned on.' : 'SMS updates turned off. You will not receive further SMS from CivicPulse.',
+        ...smsProfile(user)
+      })
+
+    } catch (error) {
+
+      console.error('SMS consent error:', error.message)
+
+      res.status(500).json({ message: 'Failed to update SMS preference.' })
+
+    }
+
+  }
+)
 
 
 // ======================================
@@ -274,7 +359,7 @@ router.post(
 
     try {
 
-      if (!isSmsConfigured()) return smsNotConfigured(res)
+      if (!isSmsKindEnabled('otp')) return smsNotConfigured(res)
 
       const user = await User.findById(req.user.id)
 
@@ -310,7 +395,7 @@ router.post(
 
       const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0')
 
-      const outcome = await sendSms(requested, `Your CivicPulse verification code is ${code}. It expires in 5 minutes. Do not share it.`)
+      const outcome = await sendSms(requested, 'otp', code)
 
       if (!outcome.ok) {
         return res.status(502).json({ message: 'Could not send the verification code. Please try again later.' })
@@ -360,7 +445,7 @@ router.post(
 
     try {
 
-      if (!isSmsConfigured()) return smsNotConfigured(res)
+      if (!isSmsKindEnabled('otp')) return smsNotConfigured(res)
 
       const code = req.body && typeof req.body.code === 'string' ? req.body.code.trim() : ''
 

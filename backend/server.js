@@ -7,6 +7,7 @@ const authRoutes = require('./routes/authRoutes')
 const complaintRoutes = require('./routes/complaintRoutes')
 const notificationRoutes = require('./routes/notificationRoutes')
 const moderationRoutes = require('./routes/moderationRoutes')
+const smsWebhookRoutes = require('./routes/smsWebhookRoutes')
 const seedAdmin = require('./utils/seedAdmin')
 const { isAllowedOrigin } = require('./config/cors')
 
@@ -34,7 +35,7 @@ app.use(cors({
   credentials: true
 }))
 
-app.use(express.json())
+app.use(express.json({ limit: '200kb' }))
 
 
 // ======================================
@@ -63,6 +64,7 @@ app.use('/api/auth', authRoutes)
 app.use('/api/complaints', complaintRoutes)
 app.use('/api/notifications', notificationRoutes)
 app.use('/api/moderation', moderationRoutes)
+app.use('/api/sms', smsWebhookRoutes)
 
 
 // ======================================

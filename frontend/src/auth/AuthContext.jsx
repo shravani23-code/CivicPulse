@@ -52,12 +52,13 @@ export function AuthProvider({ children }) {
 
   }
 
-  // `mobile` is optional; an empty value is simply not sent.
-  async function register(name, email, password, mobile) {
+  // `mobile` is optional; an empty value is simply not sent. SMS consent
+  // is only ever sent as an explicit opt-in alongside a number.
+  async function register(name, email, password, mobile, smsConsent = false) {
 
     const data = await apiRequest('/api/auth/register', {
       method: 'POST',
-      json: mobile ? { name, email, password, mobile } : { name, email, password }
+      json: mobile ? { name, email, password, mobile, smsConsent: Boolean(smsConsent) } : { name, email, password }
     })
 
     setAuth({ token: data.token, user: data.user })

@@ -10,12 +10,15 @@
 // Outcomes:
 //   approved     -> enters the normal workflow (Max Heap / FIFO queue)
 //   needs_review -> held for an admin to approve or reject
-//   rejected     -> clearly inappropriate; citizen gets the reason
 //
-// Guiding rule: a flagged word ALONE never causes rejection. Automatic
-// rejection needs a clear signal (abuse / spam / gibberish) AND no sign
-// that the text describes a civic problem. Anything ambiguous goes to
-// an admin instead.
+// The engine NEVER rejects on its own. A final "not accepted" decision
+// is always made by an administrator in the Moderation panel; even
+// clear abuse or spam is only held for review. Reasons are written for
+// the administrator (the citizen sees a neutral "under review" message).
+//
+// Short descriptions, spelling mistakes and missing photos are never a
+// reason to hold a complaint on their own. Duplicate / repeat checks
+// live in suspicionDetector.js, which combines them with this result.
 //
 // Word lists are Sets so each token is checked in O(1).
 
@@ -81,8 +84,6 @@ const DEVANAGARI_CIVIC_TERMS = [
 
 const KEYBOARD_MASH = ['asdf', 'qwer', 'zxcv', 'hjkl', 'sdfg', 'dfgh', 'fghj', 'jkl;', 'uiop', 'wxyz']
 
-const MIN_MEANINGFUL_WORDS = 4
-
 function tokenize(text) {
   return (text.toLowerCase().match(/[\p{L}\p{M}]+/gu) || [])
 }
@@ -108,14 +109,57 @@ function looksLikeWord(token) {
 
 }
 
-function isCivicToken(token) {
-  return CIVIC_STEMS.some(stem => token.startsWith(stem))
+// Levenshtein distance, stopping early once it exceeds 1 (only "equal or
+// one typo away" matters here).
+function withinOneEdit(a, b) {
+
+  if (Math.abs(a.length - b.length) > 1) return false
+
+  let previousRow = Array.from({ length: b.length + 1 }, (_, index) => index)
+
+  for (let i = 1; i <= a.length; i++) {
+
+    const row = [i]
+    let rowMin = i
+
+    for (let j = 1; j <= b.length; j++) {
+      row[j] = Math.min(previousRow[j] + 1, row[j - 1] + 1, previousRow[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1))
+      rowMin = Math.min(rowMin, row[j])
+    }
+
+    if (rowMin > 1) return false
+
+    previousRow = row
+
+  }
+
+  return previousRow[b.length] <= 1
+
 }
 
-// Analyzes one complaint's text. `context.isDuplicate` is supplied by the
-// route (it needs a database lookup) when the same citizen submitted an
-// identical complaint moments earlier.
-function moderateComplaint({ title = '', description = '', location = '', category = '' }, context = {}) {
+// Exact stem prefix ("leak" -> leaking), or — for stems of 4+ letters —
+// a prefix one typo away ("garbge", "rode", "potholl"), so ordinary
+// spelling mistakes never make a real complaint look non-civic.
+function isCivicToken(token) {
+
+  return CIVIC_STEMS.some(stem => {
+
+    if (token.startsWith(stem)) return true
+
+    if (stem.length < 4 || token.length < stem.length - 1) return false
+
+    for (let length = stem.length - 1; length <= stem.length + 1; length++) {
+      if (length <= token.length && withinOneEdit(token.slice(0, length), stem)) return true
+    }
+
+    return false
+
+  })
+
+}
+
+// Analyzes one complaint's text.
+function moderateComplaint({ title = '', description = '' }) {
 
   const text = `${title}\n${description}`
   const lowerText = text.toLowerCase()
@@ -147,28 +191,25 @@ function moderateComplaint({ title = '', description = '', location = '', catego
   if (spamPhrases.length) flags.push('promotional_content')
   if (hasUrl) flags.push('contains_link')
   if (!isCivic) flags.push('no_civic_terms')
-  if (context.isDuplicate) flags.push('possible_duplicate')
-
-  const descriptionTokens = tokenize(description).filter(looksLikeWord)
 
   // --------------------------------------
-  // 1. CLEAR REJECTIONS (never on one keyword alone)
+  // 1. CLEAR PROBLEMS -> ADMIN REVIEW (never automatic rejection)
   // --------------------------------------
 
   if (!mostlyNonLatin && meaningfulWords.length < 2 && !isCivic) {
     flags.push('meaningless_text')
-    return decision('rejected', flags,
-      'The complaint text does not contain meaningful words. Please describe the civic problem in plain language and submit again.')
+    return decision('needs_review', flags,
+      'The text does not contain meaningful words.')
   }
 
   if (!isCivic && strongAbuse.length > 0) {
-    return decision('rejected', flags,
-      'The complaint contains abusive language and does not describe a civic issue. Please describe the problem respectfully and submit again.')
+    return decision('needs_review', flags,
+      'Contains abusive language and does not describe a civic issue.')
   }
 
   if (!isCivic && spamScore >= 2) {
-    return decision('rejected', flags,
-      'The complaint appears to be advertising or spam rather than a civic issue.')
+    return decision('needs_review', flags,
+      'Looks like advertising or spam rather than a civic issue.')
   }
 
   // --------------------------------------
@@ -177,35 +218,24 @@ function moderateComplaint({ title = '', description = '', location = '', catego
 
   if (threats.length) {
     return decision('needs_review', flags,
-      'Contains threatening language — an administrator will review it before processing.')
+      'Contains threatening language.')
   }
 
   if (strongAbuse.length) {
     return decision('needs_review', flags,
-      'Describes a civic issue but contains abusive language — an administrator will review it.')
+      'Describes a civic issue but contains abusive language.')
   }
 
   if (spamScore > 0) {
     return decision('needs_review', flags,
-      'Contains a link or promotional wording — an administrator will confirm it is a genuine complaint.')
-  }
-
-  if (context.isDuplicate) {
-    return decision('needs_review', flags,
-      'An identical complaint was submitted from your account moments ago — an administrator will check it is not a duplicate.')
+      'Contains a link or promotional wording.')
   }
 
   if (!isCivic) {
     return decision('needs_review', flags,
       mostlyNonLatin
-        ? 'The complaint could not be automatically checked — an administrator will review it.'
-        : 'The complaint does not clearly describe a civic issue — an administrator will review it. You may be asked for more information.')
-  }
-
-  if (!mostlyNonLatin && descriptionTokens.length < MIN_MEANINGFUL_WORDS) {
-    flags.push('too_little_detail')
-    return decision('needs_review', flags,
-      'The description is very short — an administrator will review it and may ask for more information.')
+        ? 'The text could not be checked automatically (non-Latin script without recognised civic terms).'
+        : 'The text does not clearly describe a civic issue.')
   }
 
   // --------------------------------------

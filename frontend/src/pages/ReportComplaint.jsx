@@ -372,8 +372,9 @@ function ReportComplaint() {
     if (currentStep === 1) {
       if (!formData.title.trim()) return 'Please enter a complaint title.'
       if (!formData.category) return 'Please select a category.'
-      if (!usingSavedMobile && !normalizeIndianMobile(formData.mobile)) {
-        return 'Please enter a valid 10-digit Indian mobile number (starting with 6, 7, 8 or 9).'
+      // Optional: blank is fine, anything typed must be valid.
+      if (!usingSavedMobile && formData.mobile.trim() && !normalizeIndianMobile(formData.mobile)) {
+        return 'Please enter a valid 10-digit Indian mobile number (starting with 6, 7, 8 or 9), or leave it blank.'
       }
     }
 
@@ -426,8 +427,9 @@ function ReportComplaint() {
       if (formData.latitude !== null) body.append('latitude', formData.latitude)
       if (formData.longitude !== null) body.append('longitude', formData.longitude)
 
-      // Omitted when reusing the number saved on the account
-      if (!usingSavedMobile) body.append('mobile', formData.mobile.trim())
+      // Omitted when reusing the number saved on the account, or when
+      // the citizen chose not to give one.
+      if (!usingSavedMobile && formData.mobile.trim()) body.append('mobile', formData.mobile.trim())
 
       formData.images.forEach(file => body.append('images', file))
 
@@ -617,7 +619,7 @@ function ReportComplaint() {
                 <div className="form-group">
 
                   <label htmlFor="complaint-mobile">
-                    Mobile Number
+                    Mobile Number <span className="optional-label">(optional)</span>
                   </label>
 
                   {usingSavedMobile ? (
@@ -692,7 +694,7 @@ function ReportComplaint() {
                   {otpMessage && <small className="location-hint">{otpMessage}</small>}
 
                   <small>
-                    Used only to update you about this complaint. It is never shown publicly.
+                    Not required to report a complaint. Used only to update you about your complaints, and never shown publicly. SMS is sent only if you turn on SMS updates under My Complaints.
                   </small>
 
                 </div>
@@ -930,7 +932,7 @@ function ReportComplaint() {
                     <strong>
                       {usingSavedMobile
                         ? profile.mobileMasked
-                        : (normalizeIndianMobile(formData.mobile) || formData.mobile)}
+                        : (normalizeIndianMobile(formData.mobile) || formData.mobile || 'Not provided')}
                     </strong>
                   </div>
 

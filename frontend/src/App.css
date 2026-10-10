@@ -3579,3 +3579,107 @@ a {
   }
 
 }
+
+/* ======================================
+   SMS PREFERENCES + CONSENT
+   ====================================== */
+
+.sms-card-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.sms-card-row p {
+  margin: 4px 0 0;
+  color: #4b5a51;
+  font-size: 14px;
+}
+
+.sms-toggle,
+.consent-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+  font-weight: 600;
+  color: #2f3d34;
+}
+
+.sms-toggle input,
+.consent-option input {
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  flex-shrink: 0;
+  accent-color: #3f7d58;
+  cursor: pointer;
+}
+
+.sms-toggle input:disabled,
+.consent-option input:disabled {
+  cursor: not-allowed;
+}
+
+.consent-option span {
+  font-weight: 500;
+}
+
+.notification-sms {
+  display: block;
+  margin-top: 4px;
+  color: #7b8780;
+  font-size: 12px;
+}
+
+/* ======================================
+   SUSPICIOUS-SUBMISSION REVIEW (Moderation panel)
+   ====================================== */
+
+.suspicion-signals {
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #f8f5ec;
+  border: 1px solid #eadfc3;
+}
+
+.suspicion-signals > span {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+  color: #796b45;
+  margin-bottom: 6px;
+}
+
+.suspicion-signals ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13.5px;
+  color: #4b5a51;
+  line-height: 1.6;
+}
+
+.suspicion-signals li small {
+  display: block;
+  color: #7b8780;
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.suspicion-related {
+  font-size: 13px;
+  color: #4b5a51;
+  line-height: 1.7;
+}
+
+.complaint-ref {
+  display: inline-block;
+  margin: 0 4px 2px 0;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: #f1f5f1;
+  color: #2f3d34;
+  font-size: 12px;
+}
