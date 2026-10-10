@@ -10,8 +10,8 @@ const { moderateComplaint } = require('../services/moderationEngine')
 const { notifyCitizen } = require('../services/notificationService')
 const {
   severityScore,
-  computePriorityScore,
   calculatePriority,
+  getEffectiveSeverity,
   rankByPriority,
   peekHighestPriority,
   buildHistoryTimeline,
@@ -105,7 +105,9 @@ const upload = multer({
   fileFilter(req, file, callback) {
 
     if (!ALLOWED_IMAGE_TYPES.includes(file.mimetype)) {
-      return callback(new Error('Only JPEG, PNG, WEBP or GIF images are allowed.'))
+      const error = new Error('Only JPEG, PNG, WEBP or GIF images are allowed.')
+      error.status = 400
+      return callback(error)
     }
 
     callback(null, true)
@@ -213,7 +215,8 @@ function withLivePriority(complaint) {
   obj.displayPriority = calculated.displayPriority
   obj.priority = calculated.displayPriority
   obj.effectiveSeverity = calculated.effectiveSeverity
-  obj.effectiveTierLabel = calculated.effectiveTierLabel
+  obj.effectiveTierLabel = calculated.tierLabel
+  obj.slaBreached = calculated.slaBreached
 
   return obj
 }
@@ -254,11 +257,19 @@ router.get('/stats', async (req, res) => {
 
     // Counts cover complaints in the processing workflow only — complaints
     // awaiting review or rejected as spam/abuse don't inflate the numbers.
-    const total = await Complaint.countDocuments(IN_WORKFLOW)
-    const pending = await Complaint.countDocuments({ ...IN_WORKFLOW, status: 'Pending' })
-    const inProgress = await Complaint.countDocuments({ ...IN_WORKFLOW, status: 'In Progress' })
-    const resolved = await Complaint.countDocuments({ ...IN_WORKFLOW, status: 'Resolved' })
-    const critical = await Complaint.countDocuments({ ...IN_WORKFLOW, severity: 'Critical' })
+    const [total, pending, inProgress, resolved, severityRows] = await Promise.all([
+      Complaint.countDocuments(IN_WORKFLOW),
+      Complaint.countDocuments({ ...IN_WORKFLOW, status: 'Pending' }),
+      Complaint.countDocuments({ ...IN_WORKFLOW, status: 'In Progress' }),
+      Complaint.countDocuments({ ...IN_WORKFLOW, status: 'Resolved' }),
+      // Only the fields the severity rule reads — no citizen data.
+      Complaint.find(IN_WORKFLOW).select('title description severity -_id').lean()
+    ])
+
+    // "Critical" uses the same effective severity as the priority queue,
+    // so a complaint escalated by a safety rule (e.g. a live wire filed
+    // as Medium) is counted here too.
+    const critical = severityRows.filter(row => getEffectiveSeverity(row) === 'Critical').length
 
     res.json({ total, pending, inProgress, resolved, critical })
 
@@ -266,7 +277,7 @@ router.get('/stats', async (req, res) => {
 
     console.error('Statistics error:', error)
 
-    res.status(500).json({ message: 'Failed to fetch complaint statistics.', error: error.message })
+    res.status(500).json({ message: 'Failed to fetch complaint statistics.' })
 
   }
 
@@ -289,13 +300,24 @@ router.get('/', requireAuth, requireRole('admin'), async (req, res) => {
 
     const complaints = await Complaint.find(filter).sort({ createdAt: -1 })
 
-    res.json(complaints.map(withLivePriority))
+    // priorityRank = position in the Max Heap drain order (1 = most
+    // urgent). Only active, in-workflow complaints get one. The
+    // dashboard sorts by this instead of re-implementing the comparator.
+    const rankById = new Map(
+      rankByPriority(complaints.filter(isInWorkflow)).map((ranked, index) => [ranked.id, index + 1])
+    )
+
+    res.json(complaints.map(complaint => {
+      const obj = withLivePriority(complaint)
+      obj.priorityRank = rankById.get(complaint.id) ?? null
+      return obj
+    }))
 
   } catch (error) {
 
     console.error('Error fetching complaints:', error)
 
-    res.status(500).json({ message: 'Failed to fetch complaints.', error: error.message })
+    res.status(500).json({ message: 'Failed to fetch complaints.' })
 
   }
 
@@ -318,7 +340,7 @@ router.get('/mine', requireAuth, async (req, res) => {
 
     console.error('Error fetching citizen complaints:', error)
 
-    res.status(500).json({ message: 'Failed to fetch your complaints.', error: error.message })
+    res.status(500).json({ message: 'Failed to fetch your complaints.' })
 
   }
 
@@ -358,7 +380,7 @@ router.get('/priority', requireAuth, requireRole('admin'), async (req, res) => {
 
     console.error('Priority integration error:', error)
 
-    res.status(500).json({ message: 'Failed to process complaints.', error: error.message })
+    res.status(500).json({ message: 'Failed to process complaints.' })
 
   }
 
@@ -574,10 +596,7 @@ router.get(
       res.status(500).json({
 
         message:
-          'Failed to process complaint queue.',
-
-        error:
-          error.message
+          'Failed to process complaint queue.'
 
       })
 
@@ -787,7 +806,7 @@ router.post('/', requireAuth, requireRole('citizen'), submitRateLimit, upload.ar
 
     console.error('Error saving complaint:', error)
 
-    res.status(500).json({ message: 'Failed to save complaint.', error: error.message })
+    res.status(500).json({ message: 'Failed to save complaint.' })
 
   }
 
@@ -852,7 +871,11 @@ router.put('/:id/status', requireAuth, requireRole('admin'), validateComplaintId
     // Notify only on a genuine transition. Keyed by the new history
     // entry's id, so a retried request (which creates no new entry)
     // can't produce a duplicate notification.
-    const statusNotification = { 'In Progress': 'status_in_progress', Resolved: 'status_resolved' }[status]
+    const statusNotification = {
+      Pending: 'status_reopened',
+      'In Progress': 'status_in_progress',
+      Resolved: 'status_resolved'
+    }[status]
 
     if (isRealTransition && statusNotification) {
 
@@ -872,7 +895,7 @@ router.put('/:id/status', requireAuth, requireRole('admin'), validateComplaintId
 
     console.error('Status update error:', error)
 
-    res.status(500).json({ message: 'Failed to update complaint status.', error: error.message })
+    res.status(500).json({ message: 'Failed to update complaint status.' })
 
   }
 
@@ -915,7 +938,7 @@ router.get('/:id/history', requireAuth, validateComplaintIdFormat, async (req, r
 
     console.error('History integration error:', error)
 
-    res.status(500).json({ message: 'Failed to process complaint history.', error: error.message })
+    res.status(500).json({ message: 'Failed to process complaint history.' })
 
   }
 
@@ -966,7 +989,7 @@ router.get('/:id/route', requireAuth, requireRole('admin'), validateComplaintIdF
 
     console.error('Route calculation error:', error)
 
-    res.status(500).json({ message: 'Failed to calculate response route.', error: error.message })
+    res.status(500).json({ message: 'Failed to calculate response route.' })
 
   }
 
@@ -1009,7 +1032,7 @@ router.get('/:id/response-status', requireAuth, validateComplaintIdFormat, async
 
     console.error('Response status error:', error)
 
-    res.status(500).json({ message: 'Failed to calculate response status.', error: error.message })
+    res.status(500).json({ message: 'Failed to calculate response status.' })
 
   }
 
@@ -1045,7 +1068,7 @@ router.get('/:id', requireAuth, validateComplaintIdFormat, async (req, res) => {
 
     console.error('GET COMPLAINT ERROR:', error)
 
-    res.status(500).json({ message: 'Failed to fetch complaint.', error: error.message })
+    res.status(500).json({ message: 'Failed to fetch complaint.' })
 
   }
 

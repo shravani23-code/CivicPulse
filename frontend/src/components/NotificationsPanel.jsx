@@ -1,20 +1,29 @@
 import { useEffect, useState } from 'react'
-import { Bell } from 'lucide-react'
-import { API_BASE_URL } from '../config/api'
+import { Bell, BellOff, RefreshCw, AlertTriangle } from 'lucide-react'
 import { useAuth } from '../auth/useAuthContext'
 
 // Citizen's persistent in-app notifications (stored on the backend, so
-// they survive refreshes and devices). Opening a notification marks it
-// read and, when it refers to a complaint, asks the parent to show it.
+// they survive refreshes and devices). They are fetched when the page
+// opens or Refresh is pressed — there is no live push. Opening a
+// notification marks it read and, when it refers to a complaint, asks
+// the parent to show it.
 function NotificationsPanel({ onOpenComplaint }) {
 
-  const { token } = useAuth()
+  const { authRequest } = useAuth()
 
   const [notifications, setNotifications] = useState([])
   const [unreadCount, setUnreadCount] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [actionError, setActionError] = useState('')
   const [expanded, setExpanded] = useState(false)
+  const [markingAll, setMarkingAll] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
+
+  function reload() {
+    setLoading(true)
+    setReloadKey(key => key + 1)
+  }
 
   useEffect(() => {
 
@@ -24,25 +33,18 @@ function NotificationsPanel({ onOpenComplaint }) {
 
       try {
 
-        const response = await fetch(`${API_BASE_URL}/api/notifications?limit=30`, {
-          headers: { Authorization: `Bearer ${token}` }
-        })
-
-        const data = await response.json()
-
-        if (!response.ok) {
-          throw new Error(data.message || 'Failed to load notifications.')
-        }
+        const data = await authRequest('/api/notifications?limit=30')
 
         if (cancelled) return
 
         setError('')
-        setNotifications(data.notifications || [])
+        setActionError('')
+        setNotifications(Array.isArray(data.notifications) ? data.notifications : [])
         setUnreadCount(data.unreadCount || 0)
 
       } catch (fetchError) {
 
-        if (!cancelled) setError(fetchError.message)
+        if (!cancelled) setError(fetchError.message || 'Failed to load notifications.')
 
       } finally {
 
@@ -56,22 +58,25 @@ function NotificationsPanel({ onOpenComplaint }) {
 
     return () => { cancelled = true }
 
-  }, [token])
+  }, [authRequest, reloadKey])
 
   async function openNotification(notification) {
 
     if (!notification.read) {
 
-      // Optimistic update; the server call is idempotent.
+      // Optimistic update; rolled back if the server rejects it.
       setNotifications(current =>
         current.map(item => item._id === notification._id ? { ...item, read: true } : item)
       )
       setUnreadCount(count => Math.max(count - 1, 0))
 
-      fetch(`${API_BASE_URL}/api/notifications/${notification._id}/read`, {
-        method: 'PATCH',
-        headers: { Authorization: `Bearer ${token}` }
-      }).catch(() => {})
+      authRequest(`/api/notifications/${notification._id}/read`, { method: 'PATCH' })
+        .catch(() => {
+          setNotifications(current =>
+            current.map(item => item._id === notification._id ? { ...item, read: false } : item)
+          )
+          setUnreadCount(count => count + 1)
+        })
 
     }
 
@@ -83,21 +88,25 @@ function NotificationsPanel({ onOpenComplaint }) {
 
   async function markAllRead() {
 
+    if (markingAll) return
+
     try {
 
-      const response = await fetch(`${API_BASE_URL}/api/notifications/read-all`, {
-        method: 'PATCH',
-        headers: { Authorization: `Bearer ${token}` }
-      })
+      setMarkingAll(true)
+      setActionError('')
 
-      if (!response.ok) throw new Error()
+      await authRequest('/api/notifications/read-all', { method: 'PATCH' })
 
       setNotifications(current => current.map(item => ({ ...item, read: true })))
       setUnreadCount(0)
 
-    } catch {
+    } catch (markError) {
 
-      setError('Failed to mark notifications as read.')
+      setActionError(markError.message || 'Failed to mark notifications as read.')
+
+    } finally {
+
+      setMarkingAll(false)
 
     }
 
@@ -119,23 +128,55 @@ function NotificationsPanel({ onOpenComplaint }) {
           <p>Updates about your complaints.</p>
         </div>
 
-        {unreadCount > 0 && (
-          <button type="button" className="refresh-button" onClick={markAllRead}>
-            Mark all as read
+        <div className="card-header-actions">
+
+          {unreadCount > 0 && (
+            <button type="button" className="refresh-button" onClick={markAllRead} disabled={markingAll}>
+              {markingAll ? 'Updating...' : 'Mark all as read'}
+            </button>
+          )}
+
+          <button type="button" className="refresh-button" onClick={reload} disabled={loading}>
+            {loading ? 'Refreshing...' : 'Refresh'}
           </button>
-        )}
+
+        </div>
 
       </div>
 
-      {loading && <div className="admin-message">Loading notifications...</div>}
-
-      {error && <div className="track-error">{error}</div>}
-
-      {!loading && !error && notifications.length === 0 && (
-        <div className="empty-state">No notifications yet.</div>
+      {loading && notifications.length === 0 && (
+        <div className="panel-status" role="status">
+          <RefreshCw size={16} className="spin" aria-hidden="true" />
+          Loading notifications...
+        </div>
       )}
 
-      {!loading && notifications.length > 0 && (
+      {error && !loading && (
+        <div className="panel-status error" role="alert">
+          <AlertTriangle size={16} aria-hidden="true" />
+          <span>{error}</span>
+          <button type="button" className="link-button" onClick={reload}>Retry</button>
+        </div>
+      )}
+
+      {actionError && (
+        <div className="panel-status error" role="alert">
+          <AlertTriangle size={16} aria-hidden="true" />
+          <span>{actionError}</span>
+        </div>
+      )}
+
+      {!loading && !error && notifications.length === 0 && (
+        <div className="panel-status empty">
+          <BellOff size={18} aria-hidden="true" />
+          <span>
+            <strong>No notifications yet.</strong>
+            <small>You will be notified here when your complaints are reviewed or their status changes.</small>
+          </span>
+        </div>
+      )}
+
+      {notifications.length > 0 && (
 
         <ul className="notification-list">
 
@@ -150,8 +191,11 @@ function NotificationsPanel({ onOpenComplaint }) {
               >
 
                 <span className="notification-item-head">
-                  <strong>{notification.title}</strong>
-                  <time>{new Date(notification.createdAt).toLocaleString()}</time>
+                  <strong>
+                    {!notification.read && <span className="visually-hidden">Unread: </span>}
+                    {notification.title}
+                  </strong>
+                  <time dateTime={notification.createdAt}>{new Date(notification.createdAt).toLocaleString()}</time>
                 </span>
 
                 <span className="notification-item-message">{notification.message}</span>

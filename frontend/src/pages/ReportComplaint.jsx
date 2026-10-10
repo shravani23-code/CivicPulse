@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 import '../App.css'
 import { API_BASE_URL } from '../config/api'
+import { normalizeIndianMobile } from '../utils/mobile'
 import { useAuth } from '../auth/useAuthContext'
 import CopyButton from '../components/CopyButton'
 import ImageGallery from '../components/ImageGallery'
@@ -45,22 +46,6 @@ const MAX_IMAGES = 5
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024 // 5MB
 const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
 
-// Mirrors normalizeIndianMobile() in backend/utils/mobile.js — the
-// backend re-validates, this just gives instant feedback.
-function normalizeIndianMobile(input) {
-
-  const raw = String(input || '').trim()
-
-  if (!/^\+?[\d\s\-()]+$/.test(raw)) return null
-
-  let digits = raw.replace(/\D/g, '')
-
-  if (digits.length === 12 && digits.startsWith('91')) digits = digits.slice(2)
-  else if (digits.length === 11 && digits.startsWith('0')) digits = digits.slice(1)
-
-  return /^[6-9]\d{9}$/.test(digits) ? `+91${digits}` : null
-
-}
 
 function ReportComplaint() {
 

@@ -7,6 +7,10 @@ const OtpChallenge = require('../models/OtpChallenge')
 const { requireAuth, requireRole } = require('../middleware/auth')
 const { rateLimit } = require('../middleware/rateLimit')
 const { normalizeIndianMobile, maskMobile } = require('../utils/mobile')
+
+const MAX_NAME_LENGTH = 100
+const MAX_EMAIL_LENGTH = 254
+const MAX_PASSWORD_LENGTH = 128
 const { isSmsConfigured, sendSms } = require('../services/smsService')
 
 const router = express.Router()
@@ -49,21 +53,55 @@ router.post('/register', async (req, res) => {
 
   try {
 
-    const { name, email, password } = req.body
+    const { name, email, password, mobile } = req.body || {}
 
-    if (!name || !name.trim()) {
-      return res.status(400).json({ message: 'Please enter your name.' })
+    // Type checks first: a non-string value (e.g. an object in a crafted
+    // request) must get a 400, never reach .trim()/.toLowerCase() or a query.
+    if (typeof name !== 'string' || !name.trim() || name.trim().length > MAX_NAME_LENGTH) {
+      return res.status(400).json({ message: 'Please enter your name (up to 100 characters).' })
     }
 
-    if (!email || !EMAIL_REGEX.test(email)) {
+    if (typeof email !== 'string' || email.trim().length > MAX_EMAIL_LENGTH || !EMAIL_REGEX.test(email.trim())) {
       return res.status(400).json({ message: 'Please enter a valid email address.' })
     }
 
-    if (!password || password.length < 6) {
+    if (typeof password !== 'string' || password.length < 6) {
       return res.status(400).json({ message: 'Password must be at least 6 characters.' })
     }
 
-    const existingUser = await User.findOne({ email: email.toLowerCase() })
+    if (password.length > MAX_PASSWORD_LENGTH) {
+      return res.status(400).json({ message: 'Password must be at most 128 characters.' })
+    }
+
+    // Mobile number is OPTIONAL at registration (it was never required);
+    // when given it must be a valid Indian mobile number and is stored in
+    // the same normalized "+91XXXXXXXXXX" string form as everywhere else.
+    // It starts unverified — only the OTP flow can verify a number.
+    let normalizedMobile
+
+    if (mobile !== undefined && mobile !== null && mobile !== '') {
+
+      if (typeof mobile !== 'string') {
+        return res.status(400).json({ message: 'Mobile number must be text.' })
+      }
+
+      if (mobile.trim() !== '') {
+
+        normalizedMobile = normalizeIndianMobile(mobile)
+
+        if (!normalizedMobile) {
+          return res.status(400).json({
+            message: 'Please enter a valid 10-digit Indian mobile number (starting with 6, 7, 8 or 9), or leave it blank.'
+          })
+        }
+
+      }
+
+    }
+
+    const normalizedEmail = email.trim().toLowerCase()
+
+    const existingUser = await User.findOne({ email: normalizedEmail })
 
     if (existingUser) {
       return res.status(409).json({ message: 'An account with this email already exists.' })
@@ -73,9 +111,10 @@ router.post('/register', async (req, res) => {
 
     const user = await User.create({
       name: name.trim(),
-      email: email.toLowerCase(),
+      email: normalizedEmail,
       passwordHash,
-      role: 'citizen'
+      role: 'citizen',
+      ...(normalizedMobile ? { mobile: normalizedMobile, mobileVerified: false } : {})
     })
 
     const token = issueToken(user)
@@ -90,7 +129,13 @@ router.post('/register', async (req, res) => {
 
     console.error('Registration error:', error)
 
-    res.status(500).json({ message: 'Failed to create account.', error: error.message })
+    // Two simultaneous sign-ups with the same email: the unique index
+    // rejects the second one — report it as the duplicate it is.
+    if (error && error.code === 11000) {
+      return res.status(409).json({ message: 'An account with this email already exists.' })
+    }
+
+    res.status(500).json({ message: 'Failed to create account.' })
 
   }
 
@@ -106,13 +151,17 @@ router.post('/login', async (req, res) => {
 
   try {
 
-    const { email, password, role } = req.body
+    const { email, password, role } = req.body || {}
 
     if (!email || !password || !role) {
       return res.status(400).json({ message: 'Please provide email, password and role.' })
     }
 
-    const user = await User.findOne({ email: email.toLowerCase() })
+    if (typeof email !== 'string' || typeof password !== 'string' || typeof role !== 'string') {
+      return res.status(400).json({ message: 'Email, password and role must be text.' })
+    }
+
+    const user = await User.findOne({ email: email.trim().toLowerCase() })
 
     if (!user || user.role !== role) {
       return res.status(401).json({ message: 'Invalid email, password, or account type.' })
@@ -136,7 +185,7 @@ router.post('/login', async (req, res) => {
 
     console.error('Login error:', error)
 
-    res.status(500).json({ message: 'Failed to log in.', error: error.message })
+    res.status(500).json({ message: 'Failed to log in.' })
 
   }
 

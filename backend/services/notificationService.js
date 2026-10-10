@@ -43,6 +43,13 @@ const NOTIFICATION_TEXT = {
   status_resolved: complaint => ({
     title: 'Complaint resolved',
     message: `Your complaint ${complaint.id} has been marked as resolved.`
+  }),
+
+  // An admin moved the complaint back to Pending (e.g. reopened after
+  // being marked resolved, or work paused).
+  status_reopened: complaint => ({
+    title: 'Complaint moved back to pending',
+    message: `Your complaint ${complaint.id} has been moved back to Pending and is awaiting action.`
   })
 
 }

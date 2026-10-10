@@ -12,7 +12,8 @@
 //
 //   1. Effective severity tier
 //   2. Score within that tier
-//   3. Older complaint first
+//   3. Older complaint first (missing/invalid dates count as newest)
+//   4. Complaint ID, ascending (unique, so the order is deterministic)
 //
 // IMPORTANT:
 // We DO NOT use one additive number to determine the actual
@@ -42,7 +43,8 @@ const PRIORITY_TIER = {
 //   after 7 days -> High tier
 //
 // High:
-//   after 3 days -> stays High
+//   after 3 days -> stays High (flagged as slaBreached,
+//   but age alone never makes anything Critical)
 //
 // Critical:
 //   already highest tier, no escalation
@@ -66,8 +68,12 @@ const SLA_DAYS = {
 // Keep this list conservative so normal complaints are not
 // incorrectly classified as Critical.
 //
+// Whole-word matching: "fire" / "fires" / "on fire" match, but
+// "fireworks", "bonfire" or "misfire" do not. Wire phrases accept
+// plurals and an optional "electric(al)" ("exposed electrical wires").
+//
 const SAFETY_WORDS =
-  /exposed wire|live wire|gas leak|fire|open manhole/i
+  /\b(?:exposed|live|naked|bare|sparking)\s+(?:electric(?:al)?\s+)?(?:wires?|cables?)\b|\bgas\s+leak(?:s|ing|age)?\b|\bfires?\b|\b(?:open|uncovered)\s+manholes?\b/i
 
 
 // ============================================================
@@ -250,6 +256,83 @@ function getAgeDays(
 
 
 // ============================================================
+// 5b. AGE REFERENCE TIME
+// ============================================================
+//
+// An unresolved complaint keeps ageing until now.
+//
+// A resolved complaint stops ageing at the moment it was
+// resolved (the latest "Resolved" history entry), so its score
+// does not keep growing for work that is already finished.
+// Resolved complaints without a usable history timestamp
+// fall back to now, which matches the previous behaviour.
+//
+// ============================================================
+
+function getAgeReferenceTime(
+  complaint,
+  now = Date.now()
+) {
+
+  if (
+    complaint?.status !== 'Resolved' ||
+    !Array.isArray(complaint?.history)
+  ) {
+    return now
+  }
+
+  let resolvedAt = NaN
+
+  for (const entry of complaint.history) {
+
+    if (entry?.status !== 'Resolved') continue
+
+    const time =
+      new Date(entry.timestamp).getTime()
+
+    if (
+      !Number.isNaN(time) &&
+      (Number.isNaN(resolvedAt) || time > resolvedAt)
+    ) {
+      resolvedAt = time
+    }
+  }
+
+  return Number.isNaN(resolvedAt)
+    ? now
+    : Math.min(resolvedAt, now)
+}
+
+
+// Converts optional counters (duplicates, people, upvotes) to a
+// safe non-negative number. Missing, negative, NaN or non-numeric
+// values count as 0 so a malformed record can never produce a NaN
+// score (which would break every heap comparison).
+function toNonNegativeNumber(value) {
+
+  const number = Number(value)
+
+  return Number.isFinite(number) && number > 0
+    ? number
+    : 0
+}
+
+
+// Creation time used for "older first" ordering. A missing or
+// invalid createdAt sorts as the NEWEST possible complaint, so it
+// can never jump ahead of complaints with a real timestamp.
+function getCreatedTime(complaint) {
+
+  const time =
+    new Date(complaint?.createdAt).getTime()
+
+  return Number.isNaN(time)
+    ? Number.POSITIVE_INFINITY
+    : time
+}
+
+
+// ============================================================
 // 6. EFFECTIVE PRIORITY TIER
 // ============================================================
 //
@@ -398,11 +481,8 @@ function calculateWithinTierScore(
   // ----------------------------------------------------------
 
   const duplicateCount =
-    Math.max(
-      0,
-      Number(
-        complaint?.duplicateCount || 0
-      )
+    toNonNegativeNumber(
+      complaint?.duplicateCount
     )
 
   const duplicateScore =
@@ -420,7 +500,7 @@ function calculateWithinTierScore(
   Math.floor(
     getAgeDays(
       complaint?.createdAt,
-      now
+      getAgeReferenceTime(complaint, now)
     )
   )
 
@@ -471,11 +551,8 @@ function calculateWithinTierScore(
   ) {
 
     const affectedPeople =
-      Math.max(
-        0,
-        Number(
-          complaint.affectedPeople
-        ) || 0
+      toNonNegativeNumber(
+        complaint.affectedPeople
       )
 
     peopleScore =
@@ -489,11 +566,8 @@ function calculateWithinTierScore(
   ) {
 
     const upvotes =
-      Math.max(
-        0,
-        Number(
-          complaint.upvotes
-        ) || 0
+      toNonNegativeNumber(
+        complaint.upvotes
       )
 
     peopleScore =
@@ -582,11 +656,24 @@ function calculatePriority(
   const displayPriority =
     tier * 100 + score
 
+  const slaDays =
+    SLA_DAYS[effectiveSeverity]
+
+  // Informational only: whether an unresolved complaint has
+  // outlived the SLA of its effective severity. The tier above
+  // already contains any escalation this causes.
+  const slaBreached =
+    complaint?.status !== 'Resolved' &&
+    slaDays !== undefined &&
+    getAgeDays(complaint?.createdAt, now) > slaDays
+
   return {
     tier,
+    tierLabel: getTierLabel(tier),
     score,
     displayPriority,
-    effectiveSeverity
+    effectiveSeverity,
+    slaBreached
   }
 }
 
@@ -703,17 +790,32 @@ class MaxHeapPriorityQueue {
     // --------------------------------------------------------
 
     const aTime =
-      new Date(
-        a.createdAt
-      ).getTime()
+      getCreatedTime(a)
 
     const bTime =
-      new Date(
-        b.createdAt
-      ).getTime()
+      getCreatedTime(b)
 
     // Older timestamp = higher priority.
-    return aTime < bTime
+    if (aTime !== bTime) {
+      return aTime < bTime
+    }
+
+
+    // --------------------------------------------------------
+    // 4. FINAL TIE-BREAKER: COMPLAINT ID
+    // --------------------------------------------------------
+    //
+    // Complaint IDs are unique, so two different complaints are
+    // never "equal" and the drain order is fully deterministic
+    // regardless of insertion order.
+    //
+    const aId =
+      String(a.id ?? a._id ?? '')
+
+    const bId =
+      String(b.id ?? b._id ?? '')
+
+    return aId < bId
   }
 
 
@@ -945,6 +1047,78 @@ class MaxHeapPriorityQueue {
 
 
 // ============================================================
+// 11b. HEAP ENTRY HELPERS
+// ============================================================
+//
+// Shared by rankByPriority() and peekHighestPriority() so both
+// attach exactly the same priority fields as withLivePriority()
+// in complaintRoutes.js.
+//
+// ============================================================
+
+// Only unresolved complaints enter the queue. Non-array input and
+// null entries are ignored instead of crashing the request.
+function getActiveComplaints(complaints) {
+
+  if (!Array.isArray(complaints)) {
+    return []
+  }
+
+  return complaints.filter(
+    complaint =>
+      complaint &&
+      complaint.status !==
+      'Resolved'
+  )
+}
+
+function toHeapEntry(
+  complaint,
+  now = Date.now()
+) {
+
+  const priority =
+    calculatePriority(
+      complaint,
+      now
+    )
+
+  return {
+
+    ...(
+      complaint.toObject
+        ? complaint.toObject()
+        : complaint
+    ),
+
+    priorityTier:
+      priority.tier,
+
+    priorityScore:
+      priority.score,
+
+    displayPriority:
+      priority.displayPriority,
+
+    // Keep compatibility with
+    // the existing frontend/backend
+    // field named "priority".
+    priority:
+      priority.displayPriority,
+
+    effectiveSeverity:
+      priority.effectiveSeverity,
+
+    effectiveTierLabel:
+      priority.tierLabel,
+
+    slaBreached:
+      priority.slaBreached
+  }
+}
+
+
+// ============================================================
 // 12. RANK COMPLAINTS USING MAX HEAP
 // ============================================================
 //
@@ -969,59 +1143,17 @@ function rankByPriority(
 
 
   // ----------------------------------------------------------
-  // Only active complaints
-  // ----------------------------------------------------------
-
-  const activeComplaints =
-    complaints.filter(
-      complaint =>
-        complaint.status !==
-        'Resolved'
-    )
-
-
-  // ----------------------------------------------------------
-  // Insert into Max Heap
+  // Insert only active complaints into the Max Heap
   // ----------------------------------------------------------
 
   for (
     const complaint
-    of activeComplaints
+    of getActiveComplaints(complaints)
   ) {
 
-    const priority =
-      calculatePriority(
-        complaint,
-        now
-      )
-
-
-    heap.push({
-
-      ...(
-        complaint.toObject
-          ? complaint.toObject()
-          : complaint
-      ),
-
-      priorityTier:
-        priority.tier,
-
-      priorityScore:
-        priority.score,
-
-      displayPriority:
-        priority.displayPriority,
-
-      // Keep compatibility with
-      // the existing frontend/backend
-      // field named "priority".
-      priority:
-        priority.displayPriority,
-
-      effectiveSeverity:
-        priority.effectiveSeverity
-    })
+    heap.push(
+      toHeapEntry(complaint, now)
+    )
   }
 
 
@@ -1068,49 +1200,14 @@ function peekHighestPriority(
     Date.now()
 
 
-  const activeComplaints =
-    complaints.filter(
-      complaint =>
-        complaint.status !==
-        'Resolved'
-    )
-
-
   for (
     const complaint
-    of activeComplaints
+    of getActiveComplaints(complaints)
   ) {
 
-    const priority =
-      calculatePriority(
-        complaint,
-        now
-      )
-
-
-    heap.push({
-
-      ...(
-        complaint.toObject
-          ? complaint.toObject()
-          : complaint
-      ),
-
-      priorityTier:
-        priority.tier,
-
-      priorityScore:
-        priority.score,
-
-      displayPriority:
-        priority.displayPriority,
-
-      priority:
-        priority.displayPriority,
-
-      effectiveSeverity:
-        priority.effectiveSeverity
-    })
+    heap.push(
+      toHeapEntry(complaint, now)
+    )
   }
 
 
@@ -1459,6 +1556,7 @@ module.exports = {
   hasSafetyRisk,
   getEffectiveSeverity,
   getAgeDays,
+  getAgeReferenceTime,
   getEffectiveTier,
   getTierLabel,
   calculateWithinTierScore,

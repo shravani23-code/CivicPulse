@@ -23,3 +23,6 @@ pnpm-debug.log*
 
 # OS files
 .DS_Store
+# Local backup copies of source files
+*.backup.js
+*.corrected.js

@@ -20,7 +20,8 @@ const notificationSchema = new mongoose.Schema({
       'complaint_rejected',
       'complaint_approved',
       'status_in_progress',
-      'status_resolved'
+      'status_resolved',
+      'status_reopened'
     ]
   },
 

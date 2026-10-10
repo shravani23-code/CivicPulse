@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
-import { ShieldAlert } from 'lucide-react'
-import { API_BASE_URL } from '../config/api'
+import { ShieldAlert, ShieldCheck, RefreshCw, AlertTriangle } from 'lucide-react'
 import { useAuth } from '../auth/useAuthContext'
 import ImageGallery from './ImageGallery'
 
@@ -9,6 +8,17 @@ const TABS = [
   { value: 'needs_review', label: 'Needs Review', countKey: 'needsReview' },
   { value: 'rejected', label: 'Rejected', countKey: 'rejected' }
 ]
+
+const EMPTY_MESSAGES = {
+  needs_review: {
+    title: 'No complaints are waiting for review.',
+    detail: 'New complaints that need a manual check will appear here.'
+  },
+  rejected: {
+    title: 'No rejected complaints.',
+    detail: 'Complaints you reject will be listed here and can be overturned.'
+  }
+}
 
 const FLAG_LABELS = {
   abusive_language: 'Abusive language',
@@ -27,11 +37,13 @@ const FLAG_LABELS = {
 // happens once); rejecting requires a reason that is sent to the citizen.
 function ModerationPanel({ onWorkflowChange }) {
 
-  const { token } = useAuth()
+  const { authRequest } = useAuth()
 
   const [tab, setTab] = useState('needs_review')
   const [complaints, setComplaints] = useState([])
-  const [counts, setCounts] = useState({ needsReview: 0, rejected: 0 })
+  // null until the first successful load, so a failed request never
+  // shows a misleading "(0)".
+  const [counts, setCounts] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [openId, setOpenId] = useState('')
@@ -40,7 +52,11 @@ function ModerationPanel({ onWorkflowChange }) {
 
   // Bumped to re-run the loader (manual refresh / after an action)
   const [reloadKey, setReloadKey] = useState(0)
-  const fetchQueue = () => setReloadKey(key => key + 1)
+
+  function fetchQueue() {
+    setLoading(true)
+    setReloadKey(key => key + 1)
+  }
 
   useEffect(() => {
 
@@ -50,25 +66,17 @@ function ModerationPanel({ onWorkflowChange }) {
 
       try {
 
-        const response = await fetch(`${API_BASE_URL}/api/moderation/complaints?status=${tab}`, {
-          headers: { Authorization: `Bearer ${token}` }
-        })
-
-        const data = await response.json()
-
-        if (!response.ok) {
-          throw new Error(data.message || 'Failed to load moderation queue.')
-        }
+        const data = await authRequest(`/api/moderation/complaints?status=${tab}`)
 
         if (cancelled) return
 
         setError('')
-        setComplaints(data.complaints || [])
+        setComplaints(Array.isArray(data.complaints) ? data.complaints : [])
         setCounts(data.counts || { needsReview: 0, rejected: 0 })
 
       } catch (fetchError) {
 
-        if (!cancelled) setError(fetchError.message)
+        if (!cancelled) setError(fetchError.message || 'Failed to load the moderation queue.')
 
       } finally {
 
@@ -82,7 +90,16 @@ function ModerationPanel({ onWorkflowChange }) {
 
     return () => { cancelled = true }
 
-  }, [tab, token, reloadKey])
+  }, [tab, authRequest, reloadKey])
+
+  function switchTab(value) {
+    if (value === tab) return
+    setTab(value)
+    setOpenId('')
+    setReason('')
+    setComplaints([])
+    setLoading(true)
+  }
 
   function toggleOpen(id) {
     setOpenId(current => (current === id ? '' : id))
@@ -91,34 +108,32 @@ function ModerationPanel({ onWorkflowChange }) {
 
   async function decide(complaint, action) {
 
-    if (action === 'reject' && reason.trim().length < 5) {
+    // Guard against double clicks while any request is in flight.
+    if (busyId) return
+
+    const trimmedReason = reason.trim()
+
+    if (action === 'reject' && trimmedReason.length < 5) {
       toast.error('Please enter a reason (at least 5 characters) for the citizen.')
       return
     }
 
-    // Guard against double clicks while a request is in flight.
-    if (busyId) return
+    const confirmText = action === 'reject'
+      ? `Reject complaint ${complaint.id}?\n\nThe citizen will be notified with this reason:\n"${trimmedReason}"`
+      : tab === 'rejected'
+        ? `Overturn the rejection and approve complaint ${complaint.id}?\n\nIt will enter the priority queue and the citizen will be notified.`
+        : `Approve complaint ${complaint.id}?\n\nIt will enter the priority queue and the citizen will be notified.`
+
+    if (!window.confirm(confirmText)) return
 
     try {
 
       setBusyId(complaint.id)
 
-      const response = await fetch(`${API_BASE_URL}/api/moderation/complaints/${complaint.id}/${action}`, {
+      const data = await authRequest(`/api/moderation/complaints/${complaint.id}/${action}`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify(action === 'reject' ? { reason: reason.trim() } : { note: reason.trim() })
+        json: action === 'reject' ? { reason: trimmedReason } : { note: trimmedReason }
       })
-
-      const data = await response.json()
-
-      if (!response.ok) {
-        // 409 = someone already decided it; refresh to show the truth.
-        if (response.status === 409) fetchQueue()
-        throw new Error(data.message || 'Moderation action failed.')
-      }
 
       toast.success(data.message)
 
@@ -131,7 +146,10 @@ function ModerationPanel({ onWorkflowChange }) {
 
     } catch (actionError) {
 
-      toast.error(actionError.message)
+      // 409 = someone already decided it; refresh to show the truth.
+      if (actionError.status === 409) fetchQueue()
+
+      toast.error(actionError.message || 'Moderation action failed.')
 
     } finally {
 
@@ -140,6 +158,8 @@ function ModerationPanel({ onWorkflowChange }) {
     }
 
   }
+
+  const empty = EMPTY_MESSAGES[tab]
 
   return (
     <div className="admin-card moderation-card">
@@ -151,18 +171,23 @@ function ModerationPanel({ onWorkflowChange }) {
           <h2 className="notifications-title">
             <ShieldAlert size={22} />
             Complaint Review
-            {counts.needsReview > 0 && <span className="notification-count">{counts.needsReview}</span>}
+            {counts?.needsReview > 0 && <span className="notification-count">{counts.needsReview}</span>}
           </h2>
           <p>Complaints held back from the priority queue until an administrator decides.</p>
         </div>
 
-        <button type="button" className="refresh-button" onClick={fetchQueue}>
-          Refresh
+        <button
+          type="button"
+          className="refresh-button"
+          onClick={fetchQueue}
+          disabled={loading || Boolean(busyId)}
+        >
+          {loading ? 'Refreshing...' : 'Refresh'}
         </button>
 
       </div>
 
-      <div className="moderation-tabs" role="tablist">
+      <div className="moderation-tabs" role="tablist" aria-label="Moderation queues">
         {TABS.map(item => (
           <button
             key={item.value}
@@ -170,26 +195,42 @@ function ModerationPanel({ onWorkflowChange }) {
             role="tab"
             aria-selected={tab === item.value}
             className={`moderation-tab${tab === item.value ? ' active' : ''}`}
-            onClick={() => { setTab(item.value); setOpenId(''); setLoading(true) }}
+            onClick={() => switchTab(item.value)}
+            disabled={Boolean(busyId)}
           >
-            {item.label} ({counts[item.countKey] || 0})
+            {item.label} ({counts ? counts[item.countKey] || 0 : '–'})
           </button>
         ))}
       </div>
 
-      {loading && <div className="admin-message">Loading...</div>}
-
-      {error && <div className="track-error">{error}</div>}
-
-      {!loading && !error && complaints.length === 0 && (
-        <div className="empty-state">
-          {tab === 'needs_review' ? 'No complaints are waiting for review.' : 'No rejected complaints.'}
+      {loading && complaints.length === 0 && (
+        <div className="panel-status" role="status">
+          <RefreshCw size={16} className="spin" aria-hidden="true" />
+          Loading complaints for review...
         </div>
       )}
 
-      {!loading && complaints.length > 0 && (
+      {error && !loading && (
+        <div className="panel-status error" role="alert">
+          <AlertTriangle size={16} aria-hidden="true" />
+          <span>{error}</span>
+          <button type="button" className="link-button" onClick={fetchQueue}>Retry</button>
+        </div>
+      )}
 
-        <div className="moderation-list">
+      {!loading && !error && complaints.length === 0 && (
+        <div className="panel-status empty">
+          <ShieldCheck size={18} aria-hidden="true" />
+          <span>
+            <strong>{empty.title}</strong>
+            <small>{empty.detail}</small>
+          </span>
+        </div>
+      )}
+
+      {complaints.length > 0 && (
+
+        <div className="moderation-list" aria-busy={loading}>
 
           {complaints.map(complaint => {
 
@@ -200,7 +241,12 @@ function ModerationPanel({ onWorkflowChange }) {
 
               <div className={`moderation-item${isOpen ? ' open' : ''}`} key={complaint.id}>
 
-                <button type="button" className="moderation-summary" onClick={() => toggleOpen(complaint.id)}>
+                <button
+                  type="button"
+                  className="moderation-summary"
+                  onClick={() => toggleOpen(complaint.id)}
+                  aria-expanded={isOpen}
+                >
                   <span className="complaint-id-cell">{complaint.id}</span>
                   <span className="moderation-summary-title">{complaint.title}</span>
                   <span>{complaint.category}</span>
@@ -276,18 +322,19 @@ function ModerationPanel({ onWorkflowChange }) {
                         value={reason}
                         onChange={event => setReason(event.target.value)}
                         placeholder="This message is shown to the citizen."
+                        disabled={isBusy}
                       />
                     </div>
 
                     <div className="wizard-actions">
 
                       {tab === 'needs_review' && (
-                        <button type="button" className="secondary-button" disabled={isBusy} onClick={() => decide(complaint, 'reject')}>
+                        <button type="button" className="secondary-button" disabled={Boolean(busyId)} onClick={() => decide(complaint, 'reject')}>
                           {isBusy ? 'Saving...' : 'Reject'}
                         </button>
                       )}
 
-                      <button type="button" className="submit-button" disabled={isBusy} onClick={() => decide(complaint, 'approve')}>
+                      <button type="button" className="submit-button" disabled={Boolean(busyId)} onClick={() => decide(complaint, 'approve')}>
                         {isBusy ? 'Saving...' : tab === 'rejected' ? 'Overturn & Approve' : 'Approve'}
                       </button>
 
