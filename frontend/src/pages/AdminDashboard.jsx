@@ -25,8 +25,6 @@ import {
 
 import '../App.css'
 
-import { API_BASE_URL } from '../config/api'
-
 import { useAuth } from '../auth/useAuthContext'
 
 import { useCountUp } from '../hooks/useCountUp'
@@ -36,6 +34,8 @@ import StatusTabs from '../components/StatusTabs'
 import ComplaintDetailsModal from '../components/ComplaintDetailsModal'
 
 import CopyButton from '../components/CopyButton'
+
+import ModerationPanel from '../components/ModerationPanel'
 
 
 // ======================================
@@ -131,14 +131,23 @@ function AnimatedStat({ value, loading }) {
 // ======================================
 // PRIORITY COMPARATOR
 //
-// Priority order:
-//
-// 1. Higher tier
-// 2. Higher score inside the tier
-// 3. Older complaint first
+// The backend is the single source of priority: every active complaint
+// in /api/complaints carries priorityRank, its position in the Max Heap
+// drain order (1 = most urgent). Ranked complaints are ordered by that
+// rank. Complaints without a rank (resolved ones) follow, ordered by the
+// same documented rule: tier, score, older first, then complaint ID.
 // ======================================
 
 function comparePriorityDescending(a, b) {
+  const rankA = Number.isFinite(a.priorityRank) ? a.priorityRank : null
+  const rankB = Number.isFinite(b.priorityRank) ? b.priorityRank : null
+
+  if (rankA !== null || rankB !== null) {
+    if (rankA === null) return 1
+    if (rankB === null) return -1
+    return rankA - rankB
+  }
+
   const tierA = Number(a.priorityTier ?? SEVERITY_RANK[a.effectiveSeverity] ?? SEVERITY_RANK[a.severity] ?? 1)
   const tierB = Number(b.priorityTier ?? SEVERITY_RANK[b.effectiveSeverity] ?? SEVERITY_RANK[b.severity] ?? 1)
 
@@ -156,7 +165,11 @@ function comparePriorityDescending(a, b) {
   const dateA = new Date(a.createdAt).getTime()
   const dateB = new Date(b.createdAt).getTime()
 
-  return dateA - dateB
+  if (dateA !== dateB) {
+    return dateA - dateB
+  }
+
+  return String(a.id).localeCompare(String(b.id))
 }
 
 
@@ -177,7 +190,7 @@ function comparePriorityAscending(a, b) {
 
 function AdminDashboard() {
 
-  const { token, logout } = useAuth()
+  const { authRequest, logout } = useAuth()
 
 
   // ======================================
@@ -224,34 +237,20 @@ function AdminDashboard() {
 
     try {
 
-      setError('')
-
-
       // ==================================
       // 1. FETCH ALL COMPLAINTS
       // ==================================
 
-      const allResponse = await fetch(
-        `${API_BASE_URL}/api/complaints`,
-        {
-          headers: {
-            Authorization: `Bearer ${token}`
-          }
-        }
-      )
+      // Both requests run in parallel; authRequest() logs the admin
+      // out on 401 (expired session).
+      const [allData, priorityData] = await Promise.all([
+        authRequest('/api/complaints'),
+        authRequest('/api/complaints/priority')
+      ])
 
-
-      const allData = await allResponse.json()
-
-
-      if (!allResponse.ok) {
-
-        throw new Error(
-          allData.message ||
-          'Failed to fetch complaints.'
-        )
-
-      }
+      // Cleared only after a successful load, so a failed refresh
+      // keeps its message visible.
+      setError('')
 
 
       // /api/complaints returns an array
@@ -263,31 +262,8 @@ function AdminDashboard() {
 
 
       // ==================================
-      // 2. FETCH MAX HEAP PRIORITY DATA
+      // 2. MAX HEAP PRIORITY DATA
       // ==================================
-
-      const priorityResponse = await fetch(
-        `${API_BASE_URL}/api/complaints/priority`,
-        {
-          headers: {
-            Authorization: `Bearer ${token}`
-          }
-        }
-      )
-
-
-      const priorityData = await priorityResponse.json()
-
-
-      if (!priorityResponse.ok) {
-
-        throw new Error(
-          priorityData.message ||
-          'Failed to fetch priority data.'
-        )
-
-      }
-
 
       // This is the top element from the Max Heap
       setMostUrgent(
@@ -304,7 +280,8 @@ function AdminDashboard() {
 
 
       setError(
-        'Unable to load complaints. Make sure the backend is running.'
+        fetchError.message ||
+        'Unable to load complaints. Please try again.'
       )
 
 
@@ -343,36 +320,13 @@ function AdminDashboard() {
       setUpdatingId(complaintId)
 
 
-      const response = await fetch(
-        `${API_BASE_URL}/api/complaints/${complaintId}/status`,
+      await authRequest(
+        `/api/complaints/${complaintId}/status`,
         {
           method: 'PUT',
-
-          headers: {
-            'Content-Type': 'application/json',
-
-            Authorization:
-              `Bearer ${token}`
-          },
-
-          body: JSON.stringify({
-            status: newStatus
-          })
+          json: { status: newStatus }
         }
       )
-
-
-      const data = await response.json()
-
-
-      if (!response.ok) {
-
-        throw new Error(
-          data.message ||
-          'Failed to update status.'
-        )
-
-      }
 
 
       // ==================================
@@ -444,22 +398,23 @@ function AdminDashboard() {
 
 
   // ======================================
-  // HIGH PRIORITY
-  //
-  // New priority system:
+  // HIGH PRIORITY (OPEN)
   //
   // Critical = tier 4
   // High     = tier 3
   //
-  // Therefore High Priority means:
-  // tier >= 3
-  //
-  // Resolved complaints can still be shown
-  // here because this is a dashboard statistic.
+  // High Priority means tier >= 3 among complaints
+  // that still need work. Resolved complaints are
+  // excluded: they are no longer urgent, and the
+  // priority queue itself never contains them.
   // ======================================
 
   const highPriorityComplaints =
     complaints.filter(complaint => {
+
+      if (complaint.status === 'Resolved') {
+        return false
+      }
 
       const tier =
         Number(
@@ -831,8 +786,19 @@ function AdminDashboard() {
 
       {error && (
 
-        <div className="track-error">
+        <div className="track-error" role="alert">
           {error}
+          {' '}
+          <button
+            type="button"
+            className="link-button"
+            onClick={() => {
+              setLoading(true)
+              fetchComplaints()
+            }}
+          >
+            Retry
+          </button>
         </div>
 
       )}
@@ -881,7 +847,7 @@ function AdminDashboard() {
             <div className="stat-card">
 
               <span>
-                High Priority
+                High Priority (Open)
               </span>
 
               <AnimatedStat
@@ -961,14 +927,11 @@ function AdminDashboard() {
 
 
                 <span className="urgent-callout-meta">
-
                   {mostUrgent.effectiveSeverity ||
                     mostUrgent.severity}
-
                   {' severity · Priority score '}
-
                   {mostUrgent.priority}
-
+                  {mostUrgent.slaBreached ? ' · Overdue (SLA exceeded)' : ''}
                 </span>
 
               </div>
@@ -1167,6 +1130,13 @@ function AdminDashboard() {
             </div>
 
           )}
+
+
+          {/* ==================================
+              MODERATION REVIEW
+          ================================== */}
+
+          <ModerationPanel onWorkflowChange={fetchComplaints} />
 
 
           {/* ==================================

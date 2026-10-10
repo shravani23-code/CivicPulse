@@ -7,6 +7,7 @@ import LocationMap from './LocationMap'
 import RouteGraph from './RouteGraph'
 import { API_BASE_URL } from '../config/api'
 import { useAuth } from '../auth/useAuthContext'
+import ModerationBadge from './ModerationBadge'
 
 function statusToClass(status) {
   if (status === 'Resolved') return 'resolved'
@@ -114,10 +115,26 @@ function ComplaintDetailsModal({ complaint, onClose, isAdmin = false, onStatusCh
 
             <div className="result-header">
               <h3>{complaint.title}</h3>
-              <span className={`status-badge ${statusToClass(complaint.status)}`}>
-                {complaint.status}
+              <span>
+                <span className={`status-badge ${statusToClass(complaint.status)}`}>
+                  {complaint.status}
+                </span>
+                <ModerationBadge status={complaint.moderationStatus} />
               </span>
             </div>
+
+            {complaint.moderationStatus === 'needs_review' && (
+              <div className="moderation-notice">
+                This complaint is being reviewed by an administrator before it enters the processing queue.
+                {complaint.moderationReason ? ` ${complaint.moderationReason}` : ''}
+              </div>
+            )}
+
+            {complaint.moderationStatus === 'rejected' && (
+              <div className="moderation-notice rejected">
+                This complaint was not accepted. Reason: {complaint.moderationReason || 'It did not meet the complaint guidelines.'}
+              </div>
+            )}
 
             <div className="result-grid">
 
@@ -167,7 +184,7 @@ function ComplaintDetailsModal({ complaint, onClose, isAdmin = false, onStatusCh
               <p>{complaint.description}</p>
             </div>
 
-            {isAdmin && onStatusChange && (
+            {isAdmin && onStatusChange && complaint.moderationStatus !== 'needs_review' && complaint.moderationStatus !== 'rejected' && (
 
               <div className="modal-status-change">
 

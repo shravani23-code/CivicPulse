@@ -4,6 +4,7 @@ import { motion } from 'framer-motion'
 import toast from 'react-hot-toast'
 import '../App.css'
 import { useAuth } from '../auth/useAuthContext'
+import { normalizeIndianMobile, MOBILE_ERROR_MESSAGE } from '../utils/mobile'
 
 function Register() {
 
@@ -13,6 +14,7 @@ function Register() {
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [mobile, setMobile] = useState('')
   const [error, setError] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
 
@@ -27,11 +29,19 @@ function Register() {
       return
     }
 
+    // Optional: blank is fine, anything typed must be a valid number.
+    const trimmedMobile = mobile.trim()
+
+    if (trimmedMobile && !normalizeIndianMobile(trimmedMobile)) {
+      setError(MOBILE_ERROR_MESSAGE)
+      return
+    }
+
     setIsSubmitting(true)
 
     try {
 
-      await register(name, email, password)
+      await register(name.trim(), email.trim(), password, trimmedMobile)
 
       toast.success('Account created! Welcome to CivicPulse.')
 
@@ -69,9 +79,12 @@ function Register() {
         <form onSubmit={handleSubmit}>
 
           <div className="form-group">
-            <label>Full Name</label>
+            <label htmlFor="register-name">Full Name</label>
             <input
+              id="register-name"
               type="text"
+              autoComplete="name"
+              maxLength={100}
               value={name}
               onChange={event => setName(event.target.value)}
               placeholder="Your name"
@@ -80,9 +93,11 @@ function Register() {
           </div>
 
           <div className="form-group">
-            <label>Email</label>
+            <label htmlFor="register-email">Email</label>
             <input
+              id="register-email"
               type="email"
+              autoComplete="email"
               value={email}
               onChange={event => setEmail(event.target.value)}
               placeholder="you@example.com"
@@ -91,14 +106,36 @@ function Register() {
           </div>
 
           <div className="form-group">
-            <label>Password</label>
+            <label htmlFor="register-password">Password</label>
             <input
+              id="register-password"
               type="password"
+              autoComplete="new-password"
               value={password}
               onChange={event => setPassword(event.target.value)}
               placeholder="At least 6 characters"
               required
             />
+          </div>
+
+          <div className="form-group">
+            <label htmlFor="register-mobile">
+              Mobile Number <span className="optional-label">(optional)</span>
+            </label>
+            <input
+              id="register-mobile"
+              type="tel"
+              inputMode="tel"
+              autoComplete="tel-national"
+              maxLength={16}
+              value={mobile}
+              onChange={event => setMobile(event.target.value)}
+              placeholder="e.g. 98765 43210"
+              aria-describedby="register-mobile-hint"
+            />
+            <small id="register-mobile-hint" className="field-hint">
+              10-digit Indian mobile number. Saved to your profile so you don't need to re-enter it when reporting a complaint; only administrators handling your complaint can see it.
+            </small>
           </div>
 
           {error && <div className="track-error">{error}</div>}

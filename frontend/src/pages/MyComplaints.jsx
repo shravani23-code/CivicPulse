@@ -8,6 +8,8 @@ import { useAuth } from '../auth/useAuthContext'
 import StatusTabs from '../components/StatusTabs'
 import ComplaintDetailsModal from '../components/ComplaintDetailsModal'
 import CopyButton from '../components/CopyButton'
+import NotificationsPanel from '../components/NotificationsPanel'
+import ModerationBadge from '../components/ModerationBadge'
 
 function statusToClass(status) {
   if (status === 'Resolved') return 'resolved'
@@ -102,6 +104,13 @@ function MyComplaints() {
 
       {error && <div className="track-error">{error}</div>}
 
+      <NotificationsPanel
+        onOpenComplaint={complaintId => {
+          const match = complaints.find(complaint => complaint.id === complaintId)
+          if (match) setSelectedComplaint(match)
+        }}
+      />
+
       {!loading && !error && (
 
         <div className="admin-card">
@@ -177,6 +186,7 @@ function MyComplaints() {
                       <span className={`status-badge ${statusToClass(complaint.status)}`}>
                         {complaint.status}
                       </span>
+                      <ModerationBadge status={complaint.moderationStatus} />
                     </span>
 
                   </motion.div>

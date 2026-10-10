@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
-import { API_BASE_URL } from '../config/api'
+import { useCallback, useEffect, useState } from 'react'
+import toast from 'react-hot-toast'
+import { apiRequest } from '../config/api'
 import { AuthContext } from './useAuthContext'
 
 const STORAGE_KEY = 'civicpulse_auth'
@@ -40,17 +41,10 @@ export function AuthProvider({ children }) {
 
   async function login(email, password, role) {
 
-    const response = await fetch(`${API_BASE_URL}/api/auth/login`, {
+    const data = await apiRequest('/api/auth/login', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password, role })
+      json: { email, password, role }
     })
-
-    const data = await response.json()
-
-    if (!response.ok) {
-      throw new Error(data.message || 'Login failed.')
-    }
 
     setAuth({ token: data.token, user: data.user })
 
@@ -58,19 +52,13 @@ export function AuthProvider({ children }) {
 
   }
 
-  async function register(name, email, password) {
+  // `mobile` is optional; an empty value is simply not sent.
+  async function register(name, email, password, mobile) {
 
-    const response = await fetch(`${API_BASE_URL}/api/auth/register`, {
+    const data = await apiRequest('/api/auth/register', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, email, password })
+      json: mobile ? { name, email, password, mobile } : { name, email, password }
     })
-
-    const data = await response.json()
-
-    if (!response.ok) {
-      throw new Error(data.message || 'Registration failed.')
-    }
 
     setAuth({ token: data.token, user: data.user })
 
@@ -78,17 +66,43 @@ export function AuthProvider({ children }) {
 
   }
 
-  function logout() {
+  const logout = useCallback(() => {
     setAuth(null)
-  }
+  }, [])
+
+  const token = auth ? auth.token : null
+
+  // Authenticated request: adds the Bearer token, and when the backend
+  // answers 401 (expired or invalid session) logs the user out so the
+  // protected route sends them to the login page instead of showing a
+  // broken page. The ApiError is re-thrown for the caller to display.
+  const authRequest = useCallback(async (path, options = {}) => {
+
+    try {
+
+      return await apiRequest(path, { ...options, token })
+
+    } catch (error) {
+
+      if (error.status === 401 && token) {
+        toast.error('Your session has expired. Please log in again.', { id: 'session-expired' })
+        setAuth(null)
+      }
+
+      throw error
+
+    }
+
+  }, [token])
 
   const value = {
-    token: auth ? auth.token : null,
+    token,
     user: auth ? auth.user : null,
     isAuthenticated: Boolean(auth),
     login,
     register,
-    logout
+    logout,
+    authRequest
   }
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

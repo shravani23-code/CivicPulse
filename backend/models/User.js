@@ -26,6 +26,22 @@ const userSchema = new mongoose.Schema({
     default: 'citizen'
   },
 
+  // Optional — added after launch, so older accounts simply don't have
+  // it. Stored normalized as "+91XXXXXXXXXX" (see utils/mobile.js).
+  mobile: {
+    type: String
+  },
+
+  // Only ever set true by a successful server-side OTP check.
+  mobileVerified: {
+    type: Boolean,
+    default: false
+  },
+
+  mobileVerifiedAt: {
+    type: Date
+  },
+
   createdAt: {
     type: Date,
     default: Date.now
