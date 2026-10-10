@@ -199,15 +199,25 @@ const submitRateLimit = rateLimit({
 
 // Returns a complaint's live priority score without persisting it —
 // severity is fixed, but priority grows with waiting time on every read.
+
 function withLivePriority(complaint) {
+  const obj = complaint.toObject
+    ? complaint.toObject()
+    : { ...complaint }
 
-  const obj = complaint.toObject()
+  const calculated = calculatePriority(complaint)
 
-  obj.priority = computePriorityScore(complaint)
+  // Keep all priority fields consistent with the live calculation.
+  obj.priorityTier = calculated.tier
+  obj.priorityScore = calculated.score
+  obj.displayPriority = calculated.displayPriority
+  obj.priority = calculated.displayPriority
+  obj.effectiveSeverity = calculated.effectiveSeverity
+  obj.effectiveTierLabel = calculated.effectiveTierLabel
 
   return obj
-
 }
+
 
 // Ownership check for Track Complaint: a complaint's owner (its
 // citizenId, set from the authenticated submitter at creation time — see
