@@ -619,7 +619,7 @@ function ReportComplaint() {
                 <div className="form-group">
 
                   <label htmlFor="complaint-mobile">
-                    Mobile Number <span className="optional-label">(optional)</span>
+                    Mobile Number
                   </label>
 
                   {usingSavedMobile ? (
