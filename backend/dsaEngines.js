@@ -8,16 +8,85 @@
 // 2. FIFO Queue    -> complaint processing
 // 3. Linked List   -> complaint history
 //
-// Priority Queue ordering:
+// ------------------------------------------------------------
+// PRIORITY SCORE (0-100)
+// ------------------------------------------------------------
 //
-//   1. Effective severity tier
-//   2. Score within that tier
+// Every complaint gets a transparent, deterministic score built
+// only from information CivicPulse actually collects:
+//
+//   Component                       Points    Source
+//   ------------------------------  --------  -------------------------
+//   Severity (citizen-selected)      15-45    severity field
+//   Public safety / health hazard     0-30    title + description
+//   Waiting time                      0-20    createdAt (2 per full day)
+//   Supporting evidence               0-5     at least one photo
+//   ------------------------------  --------
+//   Total                            15-100
+//
+// Severity:  Low 15, Medium 25, High 35, Critical 45.
+//            Missing or unknown severity -> Medium (25), a
+//            conservative middle value.
+//
+// Hazard:    Immediate safety hazard (live/exposed wire, gas
+//            leak, fire, open manhole)               -> 30
+//            Public-health hazard (sewage overflow,
+//            contaminated water, dead animal,
+//            mosquito breeding)                       -> 15
+//            Otherwise                                -> 0
+//
+// Waiting:   2 points per FULL day waited, capped at 20 (10 days).
+//            A resolved complaint stops waiting when it was
+//            resolved.
+//
+// Evidence:  5 points when at least one photo is attached. A
+//            complaint without photos is not penalised — it simply
+//            does not get the bonus.
+//
+// Why not "people affected / geographic impact"? CivicPulse does
+// not collect a count of affected people or the extent of an
+// issue, so that component would have to be invented. Its share
+// is redistributed to severity, hazard and waiting time instead.
+//
+// What is NEVER used: the citizen's identity, name, phone number
+// or any personal detail; tone, threats, insults or capital
+// letters; text length; duplicate / repeat submissions; and the
+// suspicious-submission or moderation flags (a flag never lowers
+// a score).
+//
+// Severity and hazard are not double-counted: the severity
+// component always uses the citizen's own selection, and the
+// hazard component is added separately. (getEffectiveSeverity(),
+// which upgrades a safety hazard to "Critical", is kept for the
+// severity badge and statistics only.)
+//
+// ------------------------------------------------------------
+// URGENCY LEVELS (same thresholds in backend and admin UI)
+// ------------------------------------------------------------
+//
+//   Critical  80-100
+//   High      60-79
+//   Medium    35-59
+//   Low        0-34
+//
+// Immediate safety hazards additionally get a dedicated
+// `safetyEscalation` flag. It does not depend on the score, and
+// escalated complaints always rank above non-escalated ones.
+// No score promises any particular real-world response time.
+//
+// ------------------------------------------------------------
+// PRIORITY QUEUE ORDERING (Max Heap comparator)
+// ------------------------------------------------------------
+//
+//   1. Safety escalation first
+//   2. Higher effective score (base + waiting time)
 //   3. Older complaint first (missing/invalid dates count as newest)
 //   4. Complaint ID, ascending (unique, so the order is deterministic)
 //
-// IMPORTANT:
-// We DO NOT use one additive number to determine the actual
-// ordering. The heap compares tier first, then score, then age.
+// Waiting time can therefore never lift an ordinary complaint
+// above a genuine immediate safety hazard: escalation is compared
+// before the score, and even without escalation the maximum score
+// of a non-hazard complaint is 45 + 20 + 5 = 70.
 //
 // ============================================================
 
@@ -26,28 +95,41 @@
 // PRIORITY CONFIGURATION
 // ============================================================
 
-const PRIORITY_TIER = {
-  Critical: 4,
-  High: 3,
-  Medium: 2,
-  Low: 1
+const SEVERITY_POINTS = {
+  Low: 15,
+  Medium: 25,
+  High: 35,
+  Critical: 45
 }
 
+const HAZARD_POINTS = {
+  safety: 30,
+  health: 15,
+  none: 0
+}
 
-// SLA in days for unresolved complaints.
+const WAITING_POINTS_PER_DAY = 2
+
+const WAITING_POINTS_MAX = 20
+
+const EVIDENCE_POINTS = 5
+
+const MAX_SCORE = 100
+
+// Score bands, highest first. Mirrored in the admin UI.
+const URGENCY_BANDS = [
+  { label: 'Critical', min: 80, tier: 4 },
+  { label: 'High', min: 60, tier: 3 },
+  { label: 'Medium', min: 35, tier: 2 },
+  { label: 'Low', min: 0, tier: 1 }
+]
+
+
+// SLA in days for unresolved complaints, by effective severity.
 //
-// Low:
-//   after 14 days -> Medium tier
-//
-// Medium:
-//   after 7 days -> High tier
-//
-// High:
-//   after 3 days -> stays High (flagged as slaBreached,
-//   but age alone never makes anything Critical)
-//
-// Critical:
-//   already highest tier, no escalation
+// Informational only: an unresolved complaint older than its SLA is
+// reported as `slaBreached` (shown as "Overdue" to administrators).
+// The waiting-time component already raises its score gradually.
 //
 const SLA_DAYS = {
   Low: 14,
@@ -56,17 +138,14 @@ const SLA_DAYS = {
 }
 
 
-// Safety-related phrases.
+// Immediate safety phrases.
 //
 // These are checked against BOTH:
 // - complaint title
 // - complaint description
 //
-// A detected serious safety phrase forces the complaint
-// to Critical severity.
-//
 // Keep this list conservative so normal complaints are not
-// incorrectly classified as Critical.
+// incorrectly escalated.
 //
 // Whole-word matching: "fire" / "fires" / "on fire" match, but
 // "fireworks", "bonfire" or "misfire" do not. Wire phrases accept
@@ -76,16 +155,18 @@ const SAFETY_WORDS =
   /\b(?:exposed|live|naked|bare|sparking)\s+(?:electric(?:al)?\s+)?(?:wires?|cables?)\b|\bgas\s+leak(?:s|ing|age)?\b|\bfires?\b|\b(?:open|uncovered)\s+manholes?\b/i
 
 
+// Public-health phrases (a hazard, but not an immediate threat to
+// life, so no escalation). Equally conservative and whole-word.
+const HEALTH_HAZARD_WORDS =
+  /\bsewage\s+(?:overflow(?:s|ing|ed)?|leak(?:s|ing|age)?)\b|\bcontaminated\s+(?:drinking\s+)?water\b|\bwater\s+contamination\b|\bdead\s+(?:animals?|dogs?|cats?|cows?|cattle)\b|\bmosquito\s+breeding\b/i
+
+
 // ============================================================
-// 1. BASIC SEVERITY SCORE
+// 1. LEGACY SEVERITY SCORE
 // ============================================================
 //
-// This function is kept because complaintRoutes.js currently
-// imports severityScore() when creating a complaint.
-//
-// These values are NOT used as the sole sorting mechanism.
-//
-// They simply represent the base severity level.
+// Kept for backward compatibility with older callers. New code
+// uses calculatePriority().
 //
 // Critical = 400
 // High     = 300
@@ -150,9 +231,18 @@ function normalizeSeverity(severity) {
   }
 }
 
+// True when the stored severity is one of the four real levels.
+// Used only to explain a conservative default in the breakdown.
+function isKnownSeverity(severity) {
+
+  return ['critical', 'high', 'medium', 'low'].includes(
+    String(severity ?? '').trim().toLowerCase()
+  )
+}
+
 
 // ============================================================
-// 3. SAFETY DETECTION
+// 3. HAZARD DETECTION
 // ============================================================
 //
 // Check BOTH title and description.
@@ -166,43 +256,54 @@ function normalizeSeverity(severity) {
 //   "There is an exposed live wire near the road"
 //
 // Result:
-//   Critical
+//   immediate safety hazard
 //
 // ============================================================
 
-function hasSafetyRisk(complaint) {
+function getComplaintText(complaint) {
 
   const title =
-    complaint?.title || ''
+    typeof complaint?.title === 'string' ? complaint.title : ''
 
   const description =
-    complaint?.description || ''
+    typeof complaint?.description === 'string' ? complaint.description : ''
 
-  const text =
-    `${title} ${description}`
+  return `${title} ${description}`
+}
 
-  return SAFETY_WORDS.test(text)
+function hasSafetyRisk(complaint) {
+
+  return SAFETY_WORDS.test(
+    getComplaintText(complaint)
+  )
+}
+
+function hasHealthHazard(complaint) {
+
+  return HEALTH_HAZARD_WORDS.test(
+    getComplaintText(complaint)
+  )
+}
+
+// 'safety' | 'health' | 'none'
+function getHazardLevel(complaint) {
+
+  if (hasSafetyRisk(complaint)) return 'safety'
+
+  if (hasHealthHazard(complaint)) return 'health'
+
+  return 'none'
 }
 
 
 // ============================================================
-// 4. EFFECTIVE SEVERITY
+// 4. EFFECTIVE SEVERITY (badge + statistics only)
 // ============================================================
 //
-// User-selected severity is not blindly trusted.
-//
-// Safety rules can override it.
-//
-// Example:
-//
-// Citizen selects:
-//   Medium
-//
-// Description:
-//   "Exposed live wire near road"
-//
-// Effective severity:
-//   Critical
+// A detected safety hazard upgrades the displayed severity to
+// Critical, so a live wire filed as "Medium" is still shown and
+// counted as Critical. The priority SCORE does not use this value
+// (see "not double-counted" above).
 //
 // ============================================================
 
@@ -304,17 +405,19 @@ function getAgeReferenceTime(
 }
 
 
-// Converts optional counters (duplicates, people, upvotes) to a
-// safe non-negative number. Missing, negative, NaN or non-numeric
-// values count as 0 so a malformed record can never produce a NaN
-// score (which would break every heap comparison).
-function toNonNegativeNumber(value) {
+// Full days a complaint has waited (0 for missing/invalid dates
+// and for clock skew into the future).
+function getWaitingDays(
+  complaint,
+  now = Date.now()
+) {
 
-  const number = Number(value)
-
-  return Number.isFinite(number) && number > 0
-    ? number
-    : 0
+  return Math.floor(
+    getAgeDays(
+      complaint?.createdAt,
+      getAgeReferenceTime(complaint, now)
+    )
+  )
 }
 
 
@@ -332,88 +435,49 @@ function getCreatedTime(complaint) {
 }
 
 
-// ============================================================
-// 6. EFFECTIVE PRIORITY TIER
-// ============================================================
-//
-// Tier:
-//
-// Critical = 4
-// High     = 3
-// Medium   = 2
-// Low      = 1
-//
-// SLA escalation:
-//
-// Medium > 7 days -> High
-// Low > 14 days   -> Medium
-//
-// IMPORTANT:
-//
-// Nothing can become Critical because of age.
-//
-// Only:
-// - actual Critical severity
-// - safety rule forcing Critical
-//
-// can produce tier 4.
-//
-// ============================================================
+// Number of usable photos. Malformed image entries are ignored.
+function countEvidence(complaint) {
 
-function getEffectiveTier(
-  complaint,
-  now = Date.now()
-) {
+  if (!Array.isArray(complaint?.images)) return 0
 
-  const severity =
-    getEffectiveSeverity(complaint)
+  return complaint.images.filter(
+    image => image && typeof image.url === 'string' && image.url.trim() !== ''
+  ).length
+}
 
-  // Critical is always tier 4.
-  if (severity === 'Critical') {
-    return 4
-  }
 
-  let tier =
-    PRIORITY_TIER[severity]
+// Clamps any value to a finite score in [0, MAX_SCORE]. Missing or
+// malformed values become 0 so a bad record can never produce NaN
+// (which would break every heap comparison).
+function clampScore(value) {
 
-  // Resolved complaints do not participate in the
-  // active priority queue.
-  //
-  // If this function is called directly for a resolved
-  // complaint, simply return its natural severity tier.
-  if (complaint?.status === 'Resolved') {
-    return tier
-  }
+  const number = Number(value)
 
-  const ageDays =
-    getAgeDays(
-      complaint?.createdAt,
-      now
-    )
+  if (!Number.isFinite(number)) return 0
 
-  const slaDays =
-    SLA_DAYS[severity]
-
-  // SLA escalation.
-  if (
-    slaDays !== undefined &&
-    ageDays > slaDays
-  ) {
-
-    // Never escalate above High.
-    tier =
-      Math.min(
-        tier + 1,
-        3
-      )
-  }
-
-  return tier
+  return Math.min(Math.max(number, 0), MAX_SCORE)
 }
 
 
 // ============================================================
-// 7. EFFECTIVE TIER LABEL
+// 6. URGENCY LEVEL FROM SCORE
+// ============================================================
+
+function getUrgencyBand(score) {
+
+  const value = clampScore(score)
+
+  return URGENCY_BANDS.find(band => value >= band.min)
+}
+
+function getUrgencyLevel(score) {
+
+  return getUrgencyBand(score).label
+}
+
+
+// ============================================================
+// 7. TIER LABEL
 // ============================================================
 
 function getTierLabel(tier) {
@@ -439,159 +503,69 @@ function getTierLabel(tier) {
 
 
 // ============================================================
-// 8. SCORE WITHIN THE SAME TIER
+// 8. BASE PRIORITY (no waiting time)
 // ============================================================
 //
-// Components:
-//
-// Duplicate reports:
-//   +5 per extra report
-//   maximum +40
-//
-// Age:
-//   +2 per day
-//   maximum +30
-//
-// Safety category:
-//   +20
-//
-// Optional:
-//   affectedPeople OR upvotes
-//   maximum +10
-//
-// IMPORTANT:
-//
-// This score does NOT determine the overall severity.
-//
-// The heap compares:
-//
-//   tier FIRST
-//   score SECOND
-//   age THIRD
+// Everything that is fixed at submission time. Stored as the
+// complaint's `priority` when it is created; the live score adds
+// waiting time on top of it at read time without writing to the
+// database.
 //
 // ============================================================
 
-function calculateWithinTierScore(
-  complaint,
-  now = Date.now()
-) {
+function calculateBasePriority(complaint) {
 
-  // ----------------------------------------------------------
-  // Duplicate reports
-  // ----------------------------------------------------------
+  const severity =
+    normalizeSeverity(complaint?.severity)
 
-  const duplicateCount =
-    toNonNegativeNumber(
-      complaint?.duplicateCount
-    )
+  const hazardLevel =
+    getHazardLevel(complaint)
 
-  const duplicateScore =
-    Math.min(
-      duplicateCount * 5,
-      40
-    )
+  const photos =
+    countEvidence(complaint)
 
-
-  // ----------------------------------------------------------
-  // Waiting/age score
-  // ----------------------------------------------------------
-
-  const ageDays =
-  Math.floor(
-    getAgeDays(
-      complaint?.createdAt,
-      getAgeReferenceTime(complaint, now)
-    )
-  )
-
-  const ageScore =
-    Math.min(
-      ageDays * 2,
-      30
-    )
-
-
-  // ----------------------------------------------------------
-  // Explicit safety category
-  // ----------------------------------------------------------
-  //
-  // This is deliberately separate from safety keyword
-  // detection.
-  //
-  // Safety keywords already force Critical.
-  //
-  // isSafetyCategory should only be true if the application
-  // actually stores this information.
-  //
-  // We do NOT invent a value.
-  //
-
-  const safetyCategory =
-    complaint?.isSafetyCategory === true
-
-  const safetyScore =
-    safetyCategory
-      ? 20
-      : 0
-
-
-  // ----------------------------------------------------------
-  // Optional affected people / upvotes
-  // ----------------------------------------------------------
-  //
-  // Only use these if the database actually contains them.
-  //
-  // We do not create fake values.
-  //
-
-  let peopleScore = 0
-
-  if (
-    complaint?.affectedPeople !== undefined
-  ) {
-
-    const affectedPeople =
-      toNonNegativeNumber(
-        complaint.affectedPeople
-      )
-
-    peopleScore =
-      Math.min(
-        affectedPeople / 10,
-        10
-      )
-
-  } else if (
-    complaint?.upvotes !== undefined
-  ) {
-
-    const upvotes =
-      toNonNegativeNumber(
-        complaint.upvotes
-      )
-
-    peopleScore =
-      Math.min(
-        upvotes / 2,
-        10
-      )
+  const breakdown = {
+    severity: SEVERITY_POINTS[severity],
+    hazard: HAZARD_POINTS[hazardLevel],
+    evidence: photos > 0 ? EVIDENCE_POINTS : 0
   }
 
+  return {
+    severity,
+    severityAssumed: !isKnownSeverity(complaint?.severity),
+    hazardLevel,
+    photos,
+    breakdown,
+    score: clampScore(breakdown.severity + breakdown.hazard + breakdown.evidence)
+  }
+}
 
-  // ----------------------------------------------------------
-  // Final within-tier score
-  // ----------------------------------------------------------
 
-  const total =
-    duplicateScore +
-    ageScore +
-    safetyScore +
-    peopleScore
+// Short, human-readable reason for a score, e.g.
+// "Severity High +35 · Immediate safety hazard +30 · Waiting 3 days +6"
+function explainPriority(base, waitingDays, waitingPoints) {
 
-  return Math.min(
-    Math.round(total * 100) / 100,
-    100
-  )
+  const parts = [
+    base.severityAssumed
+      ? `Severity not set, Medium assumed +${base.breakdown.severity}`
+      : `Severity ${base.severity} +${base.breakdown.severity}`
+  ]
+
+  if (base.hazardLevel === 'safety') {
+    parts.push(`Immediate safety hazard +${base.breakdown.hazard}`)
+  } else if (base.hazardLevel === 'health') {
+    parts.push(`Public-health hazard +${base.breakdown.hazard}`)
+  }
+
+  if (waitingPoints > 0) {
+    parts.push(`Waiting ${waitingDays} day${waitingDays === 1 ? '' : 's'} +${waitingPoints}`)
+  }
+
+  if (base.breakdown.evidence > 0) {
+    parts.push(`Photo evidence +${base.breakdown.evidence}`)
+  }
+
+  return parts.join(' · ')
 }
 
 
@@ -599,35 +573,24 @@ function calculateWithinTierScore(
 // 9. FINAL PRIORITY CALCULATION
 // ============================================================
 //
+// Deterministic: identical complaint data and the same `now`
+// always give the same result.
+//
 // Returns:
 //
 // {
-//   tier,
-//   score,
-//   displayPriority,
-//   effectiveSeverity
+//   score,             effective score 0-100 (base + waiting)
+//   baseScore,         score without waiting time
+//   waitingDays,
+//   breakdown,         points per component
+//   tier, tierLabel,   urgency band (4..1, Critical..Low)
+//   urgencyLevel,      same as tierLabel
+//   safetyEscalation,  unresolved immediate safety hazard
+//   explanation,
+//   displayPriority,   same as score (kept for compatibility)
+//   effectiveSeverity,
+//   slaBreached
 // }
-//
-// Example:
-//
-// Critical complaint:
-//
-// tier = 4
-// score = 20
-// displayPriority = 420
-//
-// High complaint:
-//
-// tier = 3
-// score = 70
-// displayPriority = 370
-//
-// IMPORTANT:
-//
-// displayPriority is ONLY a convenient UI number.
-//
-// Actual heap comparison uses:
-// tier -> score -> createdAt
 //
 // ============================================================
 
@@ -636,42 +599,54 @@ function calculatePriority(
   now = Date.now()
 ) {
 
-  const effectiveSeverity =
-    getEffectiveSeverity(
-      complaint
-    )
+  const base =
+    calculateBasePriority(complaint)
 
-  const tier =
-    getEffectiveTier(
-      complaint,
-      now
+  const waitingDays =
+    getWaitingDays(complaint, now)
+
+  const waitingPoints =
+    Math.min(
+      waitingDays * WAITING_POINTS_PER_DAY,
+      WAITING_POINTS_MAX
     )
 
   const score =
-    calculateWithinTierScore(
-      complaint,
-      now
-    )
+    clampScore(base.score + waitingPoints)
 
-  const displayPriority =
-    tier * 100 + score
+  const band =
+    getUrgencyBand(score)
+
+  const isResolved =
+    complaint?.status === 'Resolved'
+
+  const effectiveSeverity =
+    getEffectiveSeverity(complaint)
 
   const slaDays =
     SLA_DAYS[effectiveSeverity]
 
   // Informational only: whether an unresolved complaint has
-  // outlived the SLA of its effective severity. The tier above
-  // already contains any escalation this causes.
+  // outlived the SLA of its effective severity.
   const slaBreached =
-    complaint?.status !== 'Resolved' &&
+    !isResolved &&
     slaDays !== undefined &&
     getAgeDays(complaint?.createdAt, now) > slaDays
 
   return {
-    tier,
-    tierLabel: getTierLabel(tier),
     score,
-    displayPriority,
+    baseScore: base.score,
+    waitingDays,
+    breakdown: {
+      ...base.breakdown,
+      waiting: waitingPoints
+    },
+    tier: band.tier,
+    tierLabel: band.label,
+    urgencyLevel: band.label,
+    safetyEscalation: !isResolved && base.hazardLevel === 'safety',
+    explanation: explainPriority(base, waitingDays, waitingPoints),
+    displayPriority: score,
     effectiveSeverity,
     slaBreached
   }
@@ -679,42 +654,35 @@ function calculatePriority(
 
 
 // ============================================================
-// 10. BACKWARD-COMPATIBLE computePriorityScore()
-// ============================================================
-//
-// Your existing complaintRoutes.js already calls:
-//
-// computePriorityScore(complaint)
-//
-// Therefore KEEP this function.
-//
-// It returns the display priority:
-//
-// tier * 100 + score
-//
-// Example:
-//
-// Critical + score 20 = 420
-// High + score 30     = 330
-//
-// Again:
-//
-// This number is NOT what the heap uses for comparison.
-//
+// 10. BACKWARD-COMPATIBLE HELPERS
 // ============================================================
 
+// Effective score (0-100).
 function computePriorityScore(
   complaint,
   now = Date.now()
 ) {
 
-  const priority =
-    calculatePriority(
-      complaint,
-      now
-    )
+  return calculatePriority(complaint, now).score
+}
 
-  return priority.displayPriority
+// Urgency tier (4..1) of the effective score.
+function getEffectiveTier(
+  complaint,
+  now = Date.now()
+) {
+
+  return calculatePriority(complaint, now).tier
+}
+
+// Deprecated name from the earlier tier-based design. There is no
+// separate "within tier" score any more; returns the effective score.
+function calculateWithinTierScore(
+  complaint,
+  now = Date.now()
+) {
+
+  return calculatePriority(complaint, now).score
 }
 
 
@@ -728,13 +696,24 @@ function computePriorityScore(
 //       ↓
 // implemented using
 //       ↓
-// Max Heap
+// Max Heap (array, children of i at 2i+1 and 2i+2)
 //
 // Comparison:
 //
-// 1. Higher tier
-// 2. Higher within-tier score
+// 1. Safety escalation
+// 2. Higher effective score
 // 3. Older createdAt
+// 4. Lower complaint ID
+//
+// A position index (complaint ID -> array slot) is kept in sync
+// with every swap, so the queue can:
+//
+// - refuse duplicate entries (pushing an ID that is already queued
+//   replaces that entry instead of adding a second one)
+// - update a queued complaint's priority in O(log n)
+// - remove a complaint that became ineligible in O(log n)
+//
+// Entries without any ID are still queued, just not de-duplicated.
 //
 // ============================================================
 
@@ -744,6 +723,24 @@ class MaxHeapPriorityQueue {
 
     this.heap = []
 
+    this.positions = new Map()
+
+  }
+
+
+  // ----------------------------------------------------------
+  // Identity of an entry (complaint ID, or Mongo _id)
+  // ----------------------------------------------------------
+
+  static keyOf(entry) {
+
+    const key = entry?.id ?? entry?._id
+
+    if (key === undefined || key === null || key === '') {
+      return null
+    }
+
+    return String(key)
   }
 
 
@@ -754,34 +751,36 @@ class MaxHeapPriorityQueue {
   isHigherPriority(a, b) {
 
     // --------------------------------------------------------
-    // 1. EFFECTIVE TIER
+    // 1. SAFETY ESCALATION
     // --------------------------------------------------------
 
-    if (
-      a.priorityTier !==
-      b.priorityTier
-    ) {
+    const aEscalated =
+      a?.safetyEscalation === true
 
-      return (
-        a.priorityTier >
-        b.priorityTier
-      )
+    const bEscalated =
+      b?.safetyEscalation === true
+
+    if (aEscalated !== bEscalated) {
+      return aEscalated
     }
 
 
     // --------------------------------------------------------
-    // 2. SCORE WITHIN SAME TIER
+    // 2. EFFECTIVE SCORE
     // --------------------------------------------------------
+    //
+    // Missing or invalid scores count as 0: the complaint stays
+    // in the queue, it just sorts last among its peers.
+    //
 
-    if (
-      a.priorityScore !==
-      b.priorityScore
-    ) {
+    const aScore =
+      clampScore(a?.priorityScore)
 
-      return (
-        a.priorityScore >
-        b.priorityScore
-      )
+    const bScore =
+      clampScore(b?.priorityScore)
+
+    if (aScore !== bScore) {
+      return aScore > bScore
     }
 
 
@@ -810,12 +809,41 @@ class MaxHeapPriorityQueue {
     // regardless of insertion order.
     //
     const aId =
-      String(a.id ?? a._id ?? '')
+      String(a?.id ?? a?._id ?? '')
 
     const bId =
-      String(b.id ?? b._id ?? '')
+      String(b?.id ?? b?._id ?? '')
 
     return aId < bId
+  }
+
+
+  // ----------------------------------------------------------
+  // Swap two slots, keeping the position index in sync
+  // ----------------------------------------------------------
+
+  swap(i, j) {
+
+    [
+      this.heap[i],
+      this.heap[j]
+    ] = [
+      this.heap[j],
+      this.heap[i]
+    ]
+
+    this.trackPosition(i)
+    this.trackPosition(j)
+  }
+
+  trackPosition(index) {
+
+    const key =
+      MaxHeapPriorityQueue.keyOf(this.heap[index])
+
+    if (key !== null) {
+      this.positions.set(key, index)
+    }
   }
 
 
@@ -843,13 +871,7 @@ class MaxHeapPriorityQueue {
         )
       ) {
 
-        [
-          this.heap[index],
-          this.heap[parentIndex]
-        ] = [
-          this.heap[parentIndex],
-          this.heap[index]
-        ]
+        this.swap(index, parentIndex)
 
         index =
           parentIndex
@@ -924,18 +946,29 @@ class MaxHeapPriorityQueue {
       }
 
 
-      // Swap.
-      [
-        this.heap[index],
-        this.heap[highest]
-      ] = [
-        this.heap[highest],
-        this.heap[index]
-      ]
+      this.swap(index, highest)
 
       index =
         highest
     }
+  }
+
+
+  // Restores heap order around one slot whose entry changed.
+  restore(index) {
+
+    this.heapifyUp(index)
+
+    const key =
+      MaxHeapPriorityQueue.keyOf(this.heap[index])
+
+    // heapifyUp may have moved the entry; continue from wherever
+    // the changed entry is now (or the same slot if it has no key).
+    this.heapifyDown(
+      key !== null && this.positions.has(key)
+        ? this.positions.get(key)
+        : index
+    )
   }
 
 
@@ -945,25 +978,199 @@ class MaxHeapPriorityQueue {
   //
   // Complexity: O(log n)
   //
+  // Returns true when a new entry was added, false when an entry
+  // with the same ID was already queued (it is replaced with the
+  // new data instead, so the queue never holds duplicates) or the
+  // value was null/undefined.
+  //
   // ----------------------------------------------------------
 
   push(complaint) {
+
+    if (complaint === null || complaint === undefined) {
+      return false
+    }
+
+    const key =
+      MaxHeapPriorityQueue.keyOf(complaint)
+
+    if (key !== null && this.positions.has(key)) {
+
+      const index =
+        this.positions.get(key)
+
+      this.heap[index] =
+        complaint
+
+      this.restore(index)
+
+      return false
+    }
 
     this.heap.push(
       complaint
     )
 
+    this.trackPosition(
+      this.heap.length - 1
+    )
+
     this.heapifyUp(
       this.heap.length - 1
+    )
+
+    return true
+  }
+
+  enqueue(complaint) {
+
+    return this.push(complaint)
+  }
+
+
+  // ----------------------------------------------------------
+  // Update priority of a queued complaint
+  // ----------------------------------------------------------
+  //
+  // Complexity: O(log n). Returns false if it is not queued.
+  //
+  // ----------------------------------------------------------
+
+  update(complaint) {
+
+    const key =
+      MaxHeapPriorityQueue.keyOf(complaint)
+
+    if (key === null || !this.positions.has(key)) {
+      return false
+    }
+
+    this.push(complaint)
+
+    return true
+  }
+
+
+  // ----------------------------------------------------------
+  // Remove a queued complaint by ID (e.g. it was resolved)
+  // ----------------------------------------------------------
+  //
+  // Complexity: O(log n). Returns the removed entry or null.
+  //
+  // ----------------------------------------------------------
+
+  remove(id) {
+
+    const key =
+      id === undefined || id === null ? null : String(id)
+
+    if (key === null || !this.positions.has(key)) {
+      return null
+    }
+
+    const index =
+      this.positions.get(key)
+
+    const lastIndex =
+      this.heap.length - 1
+
+    if (index !== lastIndex) {
+      this.swap(index, lastIndex)
+    }
+
+    const removed =
+      this.heap.pop()
+
+    this.positions.delete(key)
+
+    if (index < this.heap.length) {
+      this.restore(index)
+    }
+
+    return removed
+  }
+
+
+  has(id) {
+
+    return (
+      id !== undefined &&
+      id !== null &&
+      this.positions.has(String(id))
     )
   }
 
 
   // ----------------------------------------------------------
-  // Top
+  // Rebuild from scratch (bottom-up heapify)
   // ----------------------------------------------------------
   //
-  // Returns highest-priority complaint.
+  // Complexity: O(n). Duplicate IDs in the input keep only the
+  // LAST occurrence (the most recent data), so rebuilding can
+  // never create duplicate entries.
+  //
+  // ----------------------------------------------------------
+
+  rebuild(entries) {
+
+    this.clear()
+
+    if (!Array.isArray(entries)) {
+      return this
+    }
+
+    const unique = []
+
+    const slotByKey = new Map()
+
+    for (const entry of entries) {
+
+      if (entry === null || entry === undefined) continue
+
+      const key =
+        MaxHeapPriorityQueue.keyOf(entry)
+
+      if (key !== null && slotByKey.has(key)) {
+        unique[slotByKey.get(key)] = entry
+        continue
+      }
+
+      if (key !== null) slotByKey.set(key, unique.length)
+
+      unique.push(entry)
+    }
+
+    this.heap = unique
+
+    for (let index = 0; index < this.heap.length; index++) {
+      this.trackPosition(index)
+    }
+
+    for (
+      let index = Math.floor(this.heap.length / 2) - 1;
+      index >= 0;
+      index--
+    ) {
+      this.heapifyDown(index)
+    }
+
+    return this
+  }
+
+
+  clear() {
+
+    this.heap = []
+
+    this.positions = new Map()
+  }
+
+
+  // ----------------------------------------------------------
+  // Top / Peek
+  // ----------------------------------------------------------
+  //
+  // Returns highest-priority complaint without removing it.
   //
   // Complexity: O(1)
   //
@@ -981,9 +1188,14 @@ class MaxHeapPriorityQueue {
     return this.heap[0]
   }
 
+  peek() {
+
+    return this.top()
+  }
+
 
   // ----------------------------------------------------------
-  // Pop
+  // Pop / Dequeue
   // ----------------------------------------------------------
   //
   // Removes highest-priority complaint.
@@ -1001,25 +1213,35 @@ class MaxHeapPriorityQueue {
       return null
     }
 
-
-    // Only one element.
-    if (
-      this.heap.length === 1
-    ) {
-
-      return this.heap.pop()
-    }
-
-
     const top =
       this.heap[0]
 
-    this.heap[0] =
+    const last =
       this.heap.pop()
 
-    this.heapifyDown(0)
+    const topKey =
+      MaxHeapPriorityQueue.keyOf(top)
+
+    if (topKey !== null) {
+      this.positions.delete(topKey)
+    }
+
+    if (this.heap.length > 0) {
+
+      this.heap[0] =
+        last
+
+      this.trackPosition(0)
+
+      this.heapifyDown(0)
+    }
 
     return top
+  }
+
+  dequeue() {
+
+    return this.pop()
   }
 
 
@@ -1050,29 +1272,35 @@ class MaxHeapPriorityQueue {
 // 11b. HEAP ENTRY HELPERS
 // ============================================================
 //
-// Shared by rankByPriority() and peekHighestPriority() so both
-// attach exactly the same priority fields as withLivePriority()
-// in complaintRoutes.js.
+// Shared by rankByPriority(), peekHighestPriority() and the
+// complaint routes, so every endpoint returns exactly the same
+// priority fields for a complaint.
 //
 // ============================================================
 
-// Only unresolved complaints enter the queue. Non-array input and
-// null entries are ignored instead of crashing the request.
+// Only complaints that still need work enter the queue: not
+// Resolved, and not rejected by an administrator during moderation.
+// Non-array input and null entries are ignored instead of crashing
+// the request.
+function isQueueEligible(complaint) {
+
+  return Boolean(complaint) &&
+    complaint.status !== 'Resolved' &&
+    complaint.moderationStatus !== 'rejected'
+}
+
 function getActiveComplaints(complaints) {
 
   if (!Array.isArray(complaints)) {
     return []
   }
 
-  return complaints.filter(
-    complaint =>
-      complaint &&
-      complaint.status !==
-      'Resolved'
-  )
+  return complaints.filter(isQueueEligible)
 }
 
-function toHeapEntry(
+// Plain copy of the complaint with its live priority attached.
+// Nothing is written back to the database.
+function attachPriority(
   complaint,
   now = Date.now()
 ) {
@@ -1091,30 +1319,59 @@ function toHeapEntry(
         : complaint
     ),
 
-    priorityTier:
-      priority.tier,
-
+    // Effective score (base + waiting): what the heap compares.
     priorityScore:
       priority.score,
 
-    displayPriority:
-      priority.displayPriority,
-
-    // Keep compatibility with
-    // the existing frontend/backend
-    // field named "priority".
+    // Kept for the existing frontend/backend field names.
     priority:
-      priority.displayPriority,
+      priority.score,
 
-    effectiveSeverity:
-      priority.effectiveSeverity,
+    displayPriority:
+      priority.score,
+
+    basePriorityScore:
+      priority.baseScore,
+
+    priorityBreakdown:
+      priority.breakdown,
+
+    priorityExplanation:
+      priority.explanation,
+
+    waitingDays:
+      priority.waitingDays,
+
+    priorityTier:
+      priority.tier,
 
     effectiveTierLabel:
       priority.tierLabel,
 
+    urgencyLevel:
+      priority.urgencyLevel,
+
+    safetyEscalation:
+      priority.safetyEscalation,
+
+    effectiveSeverity:
+      priority.effectiveSeverity,
+
     slaBreached:
       priority.slaBreached
   }
+}
+
+function buildPriorityQueue(
+  complaints,
+  now = Date.now()
+) {
+
+  return new MaxHeapPriorityQueue().rebuild(
+    getActiveComplaints(complaints).map(
+      complaint => attachPriority(complaint, now)
+    )
+  )
 }
 
 
@@ -1122,44 +1379,19 @@ function toHeapEntry(
 // 12. RANK COMPLAINTS USING MAX HEAP
 // ============================================================
 //
-// Only unresolved complaints:
-//
-// Pending
-// In Progress
-//
-// Resolved complaints are excluded.
+// Only eligible complaints (Pending / In Progress, not rejected).
+// The queue is rebuilt on every call, so waiting time is always
+// recalculated and no duplicates can accumulate.
 //
 // ============================================================
 
 function rankByPriority(
-  complaints
+  complaints,
+  now = Date.now()
 ) {
 
   const heap =
-    new MaxHeapPriorityQueue()
-
-  const now =
-    Date.now()
-
-
-  // ----------------------------------------------------------
-  // Insert only active complaints into the Max Heap
-  // ----------------------------------------------------------
-
-  for (
-    const complaint
-    of getActiveComplaints(complaints)
-  ) {
-
-    heap.push(
-      toHeapEntry(complaint, now)
-    )
-  }
-
-
-  // ----------------------------------------------------------
-  // Drain heap
-  // ----------------------------------------------------------
+    buildPriorityQueue(complaints, now)
 
   const ranked = []
 
@@ -1172,7 +1404,6 @@ function rankByPriority(
     )
   }
 
-
   return ranked
 }
 
@@ -1184,34 +1415,17 @@ function rankByPriority(
 // Does NOT remove the complaint.
 //
 // Complexity:
-//   Building using repeated push = O(n log n)
-//   top = O(1)
+//   Bottom-up build = O(n)
+//   peek = O(1)
 //
 // ============================================================
 
 function peekHighestPriority(
-  complaints
+  complaints,
+  now = Date.now()
 ) {
 
-  const heap =
-    new MaxHeapPriorityQueue()
-
-  const now =
-    Date.now()
-
-
-  for (
-    const complaint
-    of getActiveComplaints(complaints)
-  ) {
-
-    heap.push(
-      toHeapEntry(complaint, now)
-    )
-  }
-
-
-  return heap.top()
+  return buildPriorityQueue(complaints, now).peek()
 }
 
 
@@ -1551,17 +1765,33 @@ module.exports = {
   // Priority Queue / Max Heap
   MaxHeapPriorityQueue,
 
+  // Scoring configuration (read-only use)
+  SEVERITY_POINTS,
+  HAZARD_POINTS,
+  WAITING_POINTS_PER_DAY,
+  WAITING_POINTS_MAX,
+  EVIDENCE_POINTS,
+  URGENCY_BANDS,
+
   severityScore,
   normalizeSeverity,
   hasSafetyRisk,
+  hasHealthHazard,
+  getHazardLevel,
   getEffectiveSeverity,
   getAgeDays,
   getAgeReferenceTime,
+  getWaitingDays,
+  getUrgencyLevel,
   getEffectiveTier,
   getTierLabel,
   calculateWithinTierScore,
+  calculateBasePriority,
   calculatePriority,
   computePriorityScore,
+  isQueueEligible,
+  attachPriority,
+  buildPriorityQueue,
   rankByPriority,
   peekHighestPriority,
 

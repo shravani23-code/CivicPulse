@@ -10,8 +10,8 @@ const { moderateComplaint } = require('../services/moderationEngine')
 const { assessSubmission } = require('../services/suspicionDetector')
 const { notifyCitizen } = require('../services/notificationService')
 const {
-  severityScore,
-  calculatePriority,
+  calculateBasePriority,
+  attachPriority,
   getEffectiveSeverity,
   rankByPriority,
   peekHighestPriority,
@@ -187,16 +187,19 @@ function toOwnerView(obj) {
 // ======================================
 // MODERATION GATE
 //
-// Only approved complaints belong in the processing workflow (Max Heap
-// ranking, FIFO queue, status updates, public statistics). Complaints
-// created before moderation existed have no moderationStatus and count
-// as approved — hence $nin rather than { moderationStatus: 'approved' }.
+// Every complaint is part of the processing workflow (Max Heap ranking,
+// FIFO queue, status updates, public statistics) unless an administrator
+// REJECTED it during moderation. The admin review panel has been
+// retired, so nothing is held back any more: complaints still marked
+// "needs_review" from before stay visible and processable instead of
+// being silently hidden. Complaints created before moderation existed
+// have no moderationStatus and are included too.
 // ======================================
 
-const IN_WORKFLOW = { moderationStatus: { $nin: ['needs_review', 'rejected'] } }
+const IN_WORKFLOW = { moderationStatus: { $ne: 'rejected' } }
 
 function isInWorkflow(complaint) {
-  return complaint.moderationStatus !== 'needs_review' && complaint.moderationStatus !== 'rejected'
+  return complaint.moderationStatus !== 'rejected'
 }
 
 const submitRateLimit = rateLimit({
@@ -206,26 +209,14 @@ const submitRateLimit = rateLimit({
   message: 'You have submitted too many complaints in a short time. Please try again later.'
 })
 
-// Returns a complaint's live priority score without persisting it —
-// severity is fixed, but priority grows with waiting time on every read.
+// Returns a complaint with its live priority attached, without
+// persisting it — the base score is fixed, but the effective score grows
+// with waiting time on every read. Uses exactly the same fields as the
+// Max Heap entries (attachPriority in dsaEngines.js). Pass one `now` per
+// request so every complaint in a response is scored at the same moment.
 
-function withLivePriority(complaint) {
-  const obj = complaint.toObject
-    ? complaint.toObject()
-    : { ...complaint }
-
-  const calculated = calculatePriority(complaint)
-
-  // Keep all priority fields consistent with the live calculation.
-  obj.priorityTier = calculated.tier
-  obj.priorityScore = calculated.score
-  obj.displayPriority = calculated.displayPriority
-  obj.priority = calculated.displayPriority
-  obj.effectiveSeverity = calculated.effectiveSeverity
-  obj.effectiveTierLabel = calculated.tierLabel
-  obj.slaBreached = calculated.slaBreached
-
-  return obj
+function withLivePriority(complaint, now = Date.now()) {
+  return attachPriority(complaint, now)
 }
 
 
@@ -294,9 +285,9 @@ router.get('/stats', async (req, res) => {
 // ======================================
 // GET ALL COMPLAINTS (admin only — includes citizen contact info)
 //
-// Returns complaints in the processing workflow. Complaints awaiting
-// moderation or rejected live in the admin Moderation panel
-// (/api/moderation); pass ?moderation=all to include them here too.
+// Returns complaints in the processing workflow (everything except
+// complaints an administrator rejected); pass ?moderation=all to include
+// rejected ones too.
 // ======================================
 
 router.get('/', requireAuth, requireRole('admin'), async (req, res) => {
@@ -307,15 +298,17 @@ router.get('/', requireAuth, requireRole('admin'), async (req, res) => {
 
     const complaints = await Complaint.find(filter).sort({ createdAt: -1 })
 
+    const now = Date.now()
+
     // priorityRank = position in the Max Heap drain order (1 = most
     // urgent). Only active, in-workflow complaints get one. The
     // dashboard sorts by this instead of re-implementing the comparator.
     const rankById = new Map(
-      rankByPriority(complaints.filter(isInWorkflow)).map((ranked, index) => [ranked.id, index + 1])
+      rankByPriority(complaints.filter(isInWorkflow), now).map((ranked, index) => [ranked.id, index + 1])
     )
 
     res.json(complaints.map(complaint => {
-      const obj = withLivePriority(complaint)
+      const obj = withLivePriority(complaint, now)
       obj.priorityRank = rankById.get(complaint.id) ?? null
       return obj
     }))
@@ -341,7 +334,9 @@ router.get('/mine', requireAuth, async (req, res) => {
 
     const complaints = await Complaint.find({ citizenId: req.user.id }).sort({ createdAt: -1 })
 
-    res.json(complaints.map(complaint => toOwnerView(withLivePriority(complaint))))
+    const now = Date.now()
+
+    res.json(complaints.map(complaint => toOwnerView(withLivePriority(complaint, now))))
 
   } catch (error) {
 
@@ -356,8 +351,9 @@ router.get('/mine', requireAuth, async (req, res) => {
 
 // ======================================
 // PRIORITY COMPLAINTS — MAX HEAP (admin only)
-// The DSA showcase endpoint: complaints are pushed into a max heap keyed
-// by their live priority score and drained highest-first.
+// The DSA showcase endpoint: eligible complaints are built into a max
+// heap keyed by safety escalation, then live priority score (see
+// dsaEngines.js), and drained highest-first.
 // ======================================
 
 router.get('/priority', requireAuth, requireRole('admin'), async (req, res) => {
@@ -368,14 +364,15 @@ router.get('/priority', requireAuth, requireRole('admin'), async (req, res) => {
 
     const filter = includeResolved ? { ...IN_WORKFLOW } : { ...IN_WORKFLOW, status: { $ne: 'Resolved' } }
 
-    // Only moderation-approved complaints are pushed into the Max Heap.
+    // Rejected complaints never enter the Max Heap; rankByPriority()
+    // also skips resolved ones.
     const complaints = await Complaint.find(filter)
 
-    const rankedComplaints = rankByPriority(complaints)
+    const now = Date.now()
 
-    const mostUrgent = peekHighestPriority(
-      complaints.filter(c => c.status !== 'Resolved')
-    )
+    const rankedComplaints = rankByPriority(complaints, now)
+
+    const mostUrgent = peekHighestPriority(complaints, now)
 
     res.json({
       message: 'Complaints ranked using Max Heap Priority Queue',
@@ -486,6 +483,8 @@ router.get(
       //
       // ============================================
 
+      const now = Date.now()
+
       const queueComplaints =
         processedComplaints.map(
           (
@@ -493,10 +492,16 @@ router.get(
             index
           ) => {
 
-            const priority =
-              calculatePriority(
-                complaint
-              )
+            // Same priority fields as the Max Heap entries.
+            const {
+              priority,
+              priorityScore,
+              basePriorityScore,
+              priorityTier,
+              urgencyLevel,
+              safetyEscalation,
+              effectiveSeverity
+            } = attachPriority(complaint, now)
 
 
             return {
@@ -531,35 +536,29 @@ router.get(
               //
               // effectiveSeverity = Critical
               //
-              effectiveSeverity:
-                priority.effectiveSeverity,
+              effectiveSeverity,
 
 
-              // Convenient display value
+              // Effective priority score, 0-100
+              priority,
+
+              priorityScore,
+
+              basePriorityScore,
+
+
+              // Urgency band
               //
-              // Example:
+              // Critical = 4 (80-100)
+              // High     = 3 (60-79)
+              // Medium   = 2 (35-59)
+              // Low      = 1 (0-34)
               //
-              // Critical + score 20 = 420
-              // High + score 20     = 320
-              //
-              priority:
-                priority.displayPriority,
+              priorityTier,
 
+              urgencyLevel,
 
-              // Actual priority tier
-              //
-              // Critical = 4
-              // High     = 3
-              // Medium   = 2
-              // Low      = 1
-              //
-              priorityTier:
-                priority.tier,
-
-
-              // Score within the tier
-              priorityScore:
-                priority.score,
+              safetyEscalation,
 
 
               // Current status
@@ -705,9 +704,11 @@ router.post('/', requireAuth, requireRole('citizen'), submitRateLimit, upload.ar
     // ==================================
     // MODERATION + SUSPICIOUS-SUBMISSION CHECK (separate from priority)
     //
-    // Content checks plus duplicate / burst / location rules. Any review
-    // signal holds the complaint for an administrator; nothing here ever
-    // rejects a complaint or changes its priority.
+    // Content checks plus duplicate / burst / location rules. The result
+    // is recorded on the complaint as advisory audit information only:
+    // the admin review panel has been retired, so a signal no longer
+    // holds the complaint back. Every complaint enters the workflow, and
+    // nothing here ever rejects a complaint or changes its priority.
     // ==================================
 
     const contentCheck = moderateComplaint({ title, description })
@@ -718,13 +719,13 @@ router.post('/', requireAuth, requireRole('citizen'), submitRateLimit, upload.ar
       moderation: contentCheck
     })
 
-    const moderation = suspicion.flagged
-      ? {
-          status: 'needs_review',
-          reason: suspicion.signals.map(signal => signal.reason).join(' '),
-          flags: [...new Set([...contentCheck.flags, ...suspicion.signals.map(signal => signal.rule)])]
-        }
-      : { status: 'approved', reason: '', flags: contentCheck.flags }
+    const moderation = {
+      status: 'approved',
+      reason: suspicion.flagged
+        ? `Admitted automatically. Advisory signals recorded: ${suspicion.signals.map(signal => signal.reason).join(' ')}`
+        : '',
+      flags: [...new Set([...contentCheck.flags, ...suspicion.signals.map(signal => signal.rule)])]
+    }
 
     // ==================================
     // UPLOAD IMAGES TO CLOUDINARY
@@ -738,7 +739,9 @@ router.post('/', requireAuth, requireRole('citizen'), submitRateLimit, upload.ar
 
     const complaintId = await generateUniqueComplaintId()
 
-    const priority = severityScore(severity)
+    // Base priority (severity + hazard + evidence, 0-100) fixed at
+    // submission. Waiting time is added live on every read.
+    const priority = calculateBasePriority({ title, description, severity, images }).score
 
     const complaint = new Complaint({
 
@@ -772,7 +775,7 @@ router.post('/', requireAuth, requireRole('citizen'), submitRateLimit, upload.ar
           timestamp: new Date()
         }
       ],
-      workflowEnteredAt: moderation.status === 'approved' ? new Date() : undefined,
+      workflowEnteredAt: new Date(),
 
       history: [
         {
@@ -790,21 +793,10 @@ router.post('/', requireAuth, requireRole('citizen'), submitRateLimit, upload.ar
     // IN-APP NOTIFICATIONS (dedupe keys make these idempotent)
     // ==================================
 
-    // One SMS per submission: "registered" for a normal complaint, the
-    // neutral "needs additional review" for a held one.
-    const heldForReview = moderation.status === 'needs_review'
+    // At most one SMS per submission ("registered").
+    await notifyCitizen({ complaint, type: 'complaint_registered', sms: true })
 
-    await notifyCitizen({ complaint, type: 'complaint_registered', sms: !heldForReview })
-
-    await notifyCitizen({
-      complaint,
-      type: heldForReview ? 'complaint_under_review' : 'complaint_approved',
-      sms: heldForReview
-    })
-
-    const responseMessage = heldForReview
-      ? 'Complaint submitted. It needs a quick review by an administrator before processing. No final decision has been made.'
-      : 'Complaint submitted successfully.'
+    await notifyCitizen({ complaint, type: 'complaint_approved', sms: false })
 
     const responseComplaint = complaint.toObject()
 
@@ -813,9 +805,9 @@ router.post('/', requireAuth, requireRole('citizen'), submitRateLimit, upload.ar
     }
 
     res.status(201).json({
-      message: responseMessage,
+      message: 'Complaint submitted successfully.',
       complaint: toOwnerView(responseComplaint),
-      moderation: { status: moderation.status, reason: heldForReview ? CITIZEN_REVIEW_NOTE : '' }
+      moderation: { status: moderation.status, reason: '' }
     })
 
   } catch (error) {
@@ -853,15 +845,39 @@ router.put('/:id/status', requireAuth, requireRole('admin'), validateComplaintId
       return res.status(404).json({ message: 'Complaint not found.' })
     }
 
+    // An administrator's earlier rejection is respected.
     if (!isInWorkflow(complaint)) {
       return res.status(409).json({
-        message: complaint.moderationStatus === 'rejected'
-          ? 'This complaint was rejected during moderation and cannot be processed.'
-          : 'This complaint is awaiting moderation review. Approve it in the Moderation panel first.'
+        message: 'This complaint was rejected during moderation and cannot be processed.'
       })
     }
 
     const isRealTransition = complaint.status !== status
+
+    // A complaint still marked "needs_review" from before the review
+    // panel was retired is admitted the first time an administrator
+    // actually changes its status, with an audit entry. Its priority is
+    // untouched.
+    if (complaint.moderationStatus === 'needs_review' && isRealTransition) {
+
+      const now = new Date()
+      const reason = `Admitted to processing when an administrator changed its status to ${status}.`
+
+      complaint.moderationStatus = 'approved'
+      complaint.moderationReason = reason
+
+      if (!complaint.workflowEnteredAt) complaint.workflowEnteredAt = now
+
+      complaint.moderationHistory.push({
+        decision: 'approved',
+        reason,
+        actor: 'admin',
+        adminId: req.user.id,
+        adminEmail: req.user.email,
+        timestamp: now
+      })
+
+    }
 
     complaint.status = status
 
@@ -1078,7 +1094,7 @@ router.get('/:id', requireAuth, validateComplaintIdFormat, async (req, res) => {
       return res.status(COMPLAINT_NOT_FOUND_FOR_USER.status).json({ message: COMPLAINT_NOT_FOUND_FOR_USER.message })
     }
 
-    res.json(toPublicComplaint(withLivePriority(complaint)))
+    res.json(toPublicComplaint(withLivePriority(complaint, Date.now())))
 
   } catch (error) {
 
