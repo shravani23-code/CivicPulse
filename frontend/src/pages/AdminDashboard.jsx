@@ -35,7 +35,7 @@ import ComplaintDetailsModal from '../components/ComplaintDetailsModal'
 
 import CopyButton from '../components/CopyButton'
 
-import ModerationPanel from '../components/ModerationPanel'
+import { urgencyOf, describeWaiting } from '../utils/priority'
 
 
 // ======================================
@@ -400,13 +400,14 @@ function AdminDashboard() {
   // ======================================
   // HIGH PRIORITY (OPEN)
   //
-  // Critical = tier 4
-  // High     = tier 3
+  // Critical = tier 4 (score 80-100)
+  // High     = tier 3 (score 60-79)
   //
-  // High Priority means tier >= 3 among complaints
-  // that still need work. Resolved complaints are
-  // excluded: they are no longer urgent, and the
-  // priority queue itself never contains them.
+  // High Priority means tier >= 3, or a safety
+  // escalation, among complaints that still need
+  // work. Resolved complaints are excluded: they
+  // are no longer urgent, and the priority queue
+  // itself never contains them.
   // ======================================
 
   const highPriorityComplaints =
@@ -414,6 +415,10 @@ function AdminDashboard() {
 
       if (complaint.status === 'Resolved') {
         return false
+      }
+
+      if (complaint.safetyEscalation) {
+        return true
       }
 
       const tier =
@@ -927,10 +932,13 @@ function AdminDashboard() {
 
 
                 <span className="urgent-callout-meta">
+                  {mostUrgent.safetyEscalation ? 'Safety escalation · ' : ''}
                   {mostUrgent.effectiveSeverity ||
                     mostUrgent.severity}
                   {' severity · Priority score '}
                   {mostUrgent.priority}
+                  {'/100'}
+                  {urgencyOf(mostUrgent) ? ` (${urgencyOf(mostUrgent)})` : ''}
                   {mostUrgent.slaBreached ? ' · Overdue (SLA exceeded)' : ''}
                 </span>
 
@@ -1130,13 +1138,6 @@ function AdminDashboard() {
             </div>
 
           )}
-
-
-          {/* ==================================
-              MODERATION REVIEW
-          ================================== */}
-
-          <ModerationPanel onWorkflowChange={fetchComplaints} />
 
 
           {/* ==================================
@@ -1537,9 +1538,44 @@ function AdminDashboard() {
 
                         {/* PRIORITY */}
 
-                        <span className="priority-value">
+                        <span
+                          className="priority-cell"
+                          title={
+                            complaint.priorityExplanation ||
+                            undefined
+                          }
+                          aria-label={
+                            `Priority score ${complaint.priority ?? 'not available'} out of 100` +
+                            (urgencyOf(complaint) ? `, ${urgencyOf(complaint)} urgency` : '') +
+                            (complaint.safetyEscalation ? ', safety escalation' : '') +
+                            (complaint.priorityExplanation ? `. ${complaint.priorityExplanation}` : '')
+                          }
+                        >
 
-                          {complaint.priority}
+                          <span className="priority-value">
+                            {complaint.priority ?? '—'}
+                            <small>/100</small>
+                          </span>
+
+                          {urgencyOf(complaint) && (
+                            <span
+                              className={
+                                `severity-badge ${urgencyOf(complaint).toLowerCase()}`
+                              }
+                            >
+                              {urgencyOf(complaint)}
+                            </span>
+                          )}
+
+                          {complaint.safetyEscalation && (
+                            <span className="escalation-badge">
+                              Safety escalation
+                            </span>
+                          )}
+
+                          <small className="priority-waiting">
+                            {describeWaiting(complaint)}
+                          </small>
 
                         </span>
 

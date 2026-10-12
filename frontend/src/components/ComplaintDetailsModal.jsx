@@ -8,6 +8,7 @@ import RouteGraph from './RouteGraph'
 import { API_BASE_URL } from '../config/api'
 import { useAuth } from '../auth/useAuthContext'
 import ModerationBadge from './ModerationBadge'
+import { urgencyOf } from '../utils/priority'
 
 function statusToClass(status) {
   if (status === 'Resolved') return 'resolved'
@@ -150,7 +151,15 @@ function ComplaintDetailsModal({ complaint, onClose, isAdmin = false, onStatusCh
 
               <div className="result-item">
                 <span>Priority Score</span>
-                <strong>{complaint.priority}</strong>
+                <strong>
+                  {complaint.priority ?? 'Not available'}
+                  {complaint.priority !== undefined && complaint.priority !== null ? '/100' : ''}
+                  {urgencyOf(complaint) ? ` · ${urgencyOf(complaint)}` : ''}
+                  {complaint.safetyEscalation ? ' · Safety escalation' : ''}
+                </strong>
+                {isAdmin && complaint.priorityExplanation && (
+                  <small className="priority-waiting">{complaint.priorityExplanation}</small>
+                )}
               </div>
 
               <div className="result-item">

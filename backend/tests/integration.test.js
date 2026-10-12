@@ -77,6 +77,40 @@ if (!IS_LOCAL) {
     }
   })
 
+  // A complaint stored as "needs_review" — the state the retired admin
+  // review panel used to hold complaints in. Only legacy data can be in
+  // this state now; the moderation API still handles it.
+  let heldCounter = 0
+
+  async function seedHeld(user, fields = {}) {
+    heldCounter += 1
+    return Complaint.create({
+      id: `CP7${String(heldCounter).padStart(7, '0')}`,
+      title: 'Garbage pile',
+      category: 'Garbage',
+      description: 'Garbage not collected for a week near the market',
+      location: 'Shivaji Nagar',
+      severity: 'Medium',
+      status: 'Pending',
+      citizenId: user._id,
+      citizenName: user.name,
+      citizenEmail: user.email,
+      moderationStatus: 'needs_review',
+      moderationReason: 'The text contains a link.',
+      moderationFlags: ['contains_link'],
+      suspicion: {
+        level: 'review_required',
+        flagged: true,
+        signals: [{ rule: 'content_check', reason: 'The text contains a link.', evidence: 'www.example.com' }],
+        reviewStatus: 'pending',
+        detectedAt: new Date()
+      },
+      moderationHistory: [{ decision: 'needs_review', reason: 'The text contains a link.', actor: 'system' }],
+      history: [{ status: 'Pending', description: 'Complaint submitted by citizen.' }],
+      ...fields
+    })
+  }
+
   test.before(async () => {
 
     await mongoose.connect(TEST_URI)
@@ -244,7 +278,7 @@ if (!IS_LOCAL) {
     assert.equal(status, 400)
   })
 
-  test('complaint with promotional link is held for review, not ranked', async () => {
+  test('complaint with a promotional link is admitted and ranked; the content flag is kept as advisory data', async () => {
 
     const { status, data } = await submit(citizenB, {
       title: 'Garbage pile',
@@ -252,24 +286,85 @@ if (!IS_LOCAL) {
     })
 
     assert.equal(status, 201)
-    assert.equal(data.moderation.status, 'needs_review')
+    assert.equal(data.moderation.status, 'approved')
+    assert.equal(data.message, 'Complaint submitted successfully.')
 
-    reviewId = data.complaint.id
+    const linkedId = data.complaint.id
+
+    const stored = await Complaint.findOne({ id: linkedId }).lean()
+    assert.ok(stored.moderationFlags.includes('contains_link'))
+    assert.equal(stored.suspicion.flagged, true)
+    assert.ok(stored.workflowEnteredAt)
 
     const priority = await api('GET', '/api/complaints/priority', { token: tokenOf(admin) })
-    assert.ok(!priority.data.complaints.some(c => c.id === reviewId))
+    assert.ok(priority.data.complaints.some(c => c.id === linkedId))
 
-    const statusChange = await api('PUT', `/api/complaints/${reviewId}/status`, { token: tokenOf(admin), json: { status: 'In Progress' } })
-    assert.equal(statusChange.status, 409)
+    const statusChange = await api('PUT', `/api/complaints/${linkedId}/status`, { token: tokenOf(admin), json: { status: 'In Progress' } })
+    assert.equal(statusChange.status, 200)
+
+    const notes = await Notification.find({ complaintId: linkedId }).lean()
+    assert.equal(notes.filter(n => n.type === 'complaint_under_review').length, 0)
+
+  })
+
+  test('a legacy held complaint is visible to admins, ranked, and admitted on its first status change', async () => {
+
+    const legacy = await seedHeld(citizenB, { severity: 'High' })
+    const token = tokenOf(admin)
+
+    const all = await api('GET', '/api/complaints', { token })
+    const listed = all.data.find(c => c.id === legacy.id)
+    assert.ok(listed, 'not hidden from the admin list')
+    assert.equal(typeof listed.priorityRank, 'number')
+
+    const priority = await api('GET', '/api/complaints/priority', { token })
+    assert.ok(priority.data.complaints.some(c => c.id === legacy.id))
+
+    const change = await api('PUT', `/api/complaints/${legacy.id}/status`, { token, json: { status: 'In Progress' } })
+    assert.equal(change.status, 200)
+
+    const stored = await Complaint.findOne({ id: legacy.id }).lean()
+    assert.equal(stored.moderationStatus, 'approved')
+    assert.ok(stored.workflowEnteredAt)
+    assert.equal(stored.moderationHistory.at(-1).actor, 'admin')
+    assert.equal(stored.moderationHistory.at(-1).adminEmail, 'admin@test.local')
+    assert.equal(stored.history.at(-1).status, 'In Progress')
+    assert.ok(stored.suspicion.signals.length > 0, 'original evidence is kept')
+
+  })
+
+  test('a complaint rejected by an administrator stays out of the queue and cannot be processed', async () => {
+
+    const rejected = await seedHeld(citizenB, { moderationStatus: 'rejected', severity: 'Critical', description: 'Exposed live wire, visit www.example.com' })
+    const token = tokenOf(admin)
+
+    const all = await api('GET', '/api/complaints', { token })
+    assert.ok(!all.data.some(c => c.id === rejected.id))
+
+    const priority = await api('GET', '/api/complaints/priority', { token })
+    assert.ok(!priority.data.complaints.some(c => c.id === rejected.id))
+
+    const change = await api('PUT', `/api/complaints/${rejected.id}/status`, { token, json: { status: 'In Progress' } })
+    assert.equal(change.status, 409)
+
+    // Still available on request, and still in the database
+    const withRejected = await api('GET', '/api/complaints?moderation=all', { token })
+    assert.ok(withRejected.data.some(c => c.id === rejected.id))
+
+    await Complaint.deleteOne({ _id: rejected._id })
 
   })
 
 
   // ----------------------------------------------------------
-  // Moderation
+  // Moderation API (routes kept; the admin panel was retired)
   // ----------------------------------------------------------
 
   test('moderation list returns real counts and the held complaint', async () => {
+
+    await Complaint.updateMany({ moderationStatus: 'needs_review' }, { $set: { moderationStatus: 'approved' } })
+
+    reviewId = (await seedHeld(citizenB)).id
 
     const { status, data } = await api('GET', '/api/moderation/complaints?status=needs_review', { token: tokenOf(admin) })
 
@@ -306,12 +401,12 @@ if (!IS_LOCAL) {
 
   test('rejecting a held complaint persists the reason and notifies the owner', async () => {
 
-    const { data } = await submit(citizenB, {
+    const held = await seedHeld(citizenB, {
       title: 'Drain issue',
       description: 'Drain overflowing near school, click here www.promo.example.com'
     })
 
-    assert.equal(data.moderation.status, 'needs_review')
+    const data = { complaint: { id: held.id } }
 
     const reject = await api('POST', `/api/moderation/complaints/${data.complaint.id}/reject`, {
       token: tokenOf(admin),
@@ -442,8 +537,19 @@ if (!IS_LOCAL) {
       assert.equal(listed.effectiveTierLabel, heapEntry.effectiveTierLabel)
     }
 
-    // Public stats: real counts, workflow-only, effective Critical
-    const workflow = await Complaint.countDocuments({ moderationStatus: { $nin: ['needs_review', 'rejected'] } })
+    // Priority fields are the 0-100 score with its urgency band
+    for (const heapEntry of ranked) {
+      assert.ok(heapEntry.priority >= 0 && heapEntry.priority <= 100)
+      assert.equal(typeof heapEntry.urgencyLevel, 'string')
+      assert.equal(typeof heapEntry.priorityExplanation, 'string')
+    }
+    assert.equal(ranked[0].safetyEscalation, true)
+
+    // Stored base priority excludes waiting time: Low 15 + safety hazard 30
+    assert.equal((await Complaint.findOne({ id: safetyId }).lean()).priority, 45)
+
+    // Public stats: real counts, workflow-only (everything not rejected), effective Critical
+    const workflow = await Complaint.countDocuments({ moderationStatus: { $ne: 'rejected' } })
     assert.equal(stats.status, 200)
     assert.equal(stats.data.total, workflow)
     assert.equal(stats.data.critical, 1)
@@ -687,7 +793,7 @@ if (!IS_LOCAL) {
   let flaggedId
   let originalId
 
-  test('same-account near-duplicate is held for review with evidence; citizen gets a neutral notice', async () => {
+  test('same-account near-duplicate is admitted with the evidence recorded for admins only', async () => {
 
     const repeater = await User.create({ name: 'Repeat', email: 'repeat@test.local', passwordHash: 'x', role: 'citizen' })
     const issue = { title: 'Broken footpath', description: 'Footpath tiles broken and uneven near the bakery, people tripping at night', category: 'Road', location: 'Model Colony Lane 3' }
@@ -698,15 +804,14 @@ if (!IS_LOCAL) {
 
     const second = await submit(repeater, { ...issue, description: issue.description + '!!' })
     assert.equal(second.status, 201)
-    assert.equal(second.data.moderation.status, 'needs_review')
-    flaggedId = second.data.complaint.id
+    assert.equal(second.data.moderation.status, 'approved')
+    const duplicateId = second.data.complaint.id
 
     // Nothing internal leaks to the citizen
     assert.equal(second.data.complaint.suspicion, undefined)
     assert.equal(second.data.complaint.moderationFlags, undefined)
-    assert.match(second.data.moderation.reason, /No final decision has been made/)
 
-    const stored = await Complaint.findOne({ id: flaggedId }).lean()
+    const stored = await Complaint.findOne({ id: duplicateId }).lean()
     assert.equal(stored.suspicion.level, 'review_required')
     assert.equal(stored.suspicion.reviewStatus, 'pending')
     assert.ok(stored.suspicion.detectedAt)
@@ -714,23 +819,28 @@ if (!IS_LOCAL) {
     assert.deepEqual(signal.matchedComplaintIds, [originalId])
     assert.ok(signal.evidence)
 
-    // Held complaints never reach the heap
+    // The duplicate is ranked, and repeating a report does not raise
+    // either complaint's priority above a single report's.
     const priority = await api('GET', '/api/complaints/priority', { token: tokenOf(admin) })
-    assert.ok(!priority.data.complaints.some(c => c.id === flaggedId))
+    const rankedOriginal = priority.data.complaints.find(c => c.id === originalId)
+    const rankedDuplicate = priority.data.complaints.find(c => c.id === duplicateId)
+    assert.ok(rankedDuplicate)
+    assert.equal(rankedOriginal.priorityScore, rankedDuplicate.priorityScore)
+    assert.equal(rankedOriginal.priorityScore, 25, 'Medium severity, no hazard, no photo, not waiting')
 
-    const note = await Notification.findOne({ complaintId: flaggedId, type: 'complaint_under_review' }).lean()
-    assert.match(note.message, /requires additional review/)
-    assert.match(note.message, /No final decision has been made/)
-    assert.doesNotMatch(note.message, /fake|fraud|spam|abuse|suspicious/i)
+    const notes = await Notification.find({ complaintId: duplicateId }).lean()
+    assert.deepEqual(notes.map(n => n.type).sort(), ['complaint_approved', 'complaint_registered'])
+    assert.ok(notes.every(n => !/fake|fraud|spam|abuse|suspicious/i.test(n.message)))
 
-    const own = await api('GET', `/api/complaints/${flaggedId}`, { token: tokenOf(repeater) })
+    const own = await api('GET', `/api/complaints/${duplicateId}`, { token: tokenOf(repeater) })
     assert.equal(own.data.suspicion, undefined)
-    assert.match(own.data.moderationReason, /No final decision/)
 
-    // Admin sees the full evidence in the moderation queue
-    const queue = await api('GET', '/api/moderation/complaints?status=needs_review', { token: tokenOf(admin) })
-    const held = queue.data.complaints.find(c => c.id === flaggedId)
-    assert.ok(held.suspicion.signals.length > 0)
+    // Admin sees the full evidence on the complaint itself
+    const all = await api('GET', '/api/complaints', { token: tokenOf(admin) })
+    assert.ok(all.data.find(c => c.id === duplicateId).suspicion.signals.length > 0)
+
+    // Legacy held complaint used by the moderation-API tests below
+    flaggedId = (await seedHeld(repeater)).id
 
   })
 
@@ -754,7 +864,7 @@ if (!IS_LOCAL) {
 
   })
 
-  test('rapid submissions from one account are held for review', async () => {
+  test('rapid submissions from one account are admitted with the signal recorded', async () => {
 
     const busy = await User.create({ name: 'Busy', email: 'busy@test.local', passwordHash: 'x', role: 'citizen' })
     const issues = [
@@ -772,8 +882,7 @@ if (!IS_LOCAL) {
       outcomes.push(data.moderation.status)
     }
 
-    assert.deepEqual(outcomes.slice(0, 4), ['approved', 'approved', 'approved', 'approved'])
-    assert.equal(outcomes[4], 'needs_review')
+    assert.deepEqual(outcomes, ['approved', 'approved', 'approved', 'approved', 'approved'])
 
     const fifth = await Complaint.findOne({ citizenId: busy._id }).sort({ createdAt: -1 }).lean()
     assert.ok(fifth.suspicion.signals.some(s => s.rule === 'rapid_submissions'))
@@ -827,16 +936,18 @@ if (!IS_LOCAL) {
 
   })
 
-  test('a confirmed-invalid decision is recorded only after an admin rejects with a reason', async () => {
+  test('spam is never auto-rejected; a confirmed-invalid decision is recorded only after an admin rejects with a reason', async () => {
 
     const spammer = await User.create({ name: 'Promo', email: 'promo@test.local', passwordHash: 'x', role: 'citizen' })
-    const { data } = await submit(spammer, { title: 'Buy now', description: 'Click here for free money and cashback www.spam-offer.xyz', category: 'Other', location: 'Camp' })
+    const submitted = await submit(spammer, { title: 'Buy now', description: 'Click here for free money and cashback www.spam-offer.xyz', category: 'Other', location: 'Camp' })
 
-    assert.equal(data.moderation.status, 'needs_review', 'never auto-rejected')
-    const held = await Complaint.findOne({ id: data.complaint.id }).lean()
-    assert.equal(held.moderationStatus, 'needs_review')
-    assert.equal(held.suspicion.level, 'review_required')
-    assert.equal(await Notification.countDocuments({ complaintId: data.complaint.id, type: 'complaint_rejected' }), 0)
+    assert.equal(submitted.data.moderation.status, 'approved', 'never auto-rejected')
+    const admitted = await Complaint.findOne({ id: submitted.data.complaint.id }).lean()
+    assert.equal(admitted.suspicion.level, 'review_required')
+    assert.equal(await Notification.countDocuments({ complaintId: admitted.id, type: 'complaint_rejected' }), 0)
+
+    // An administrator can still reject a legacy held complaint through the API
+    const data = { complaint: { id: (await seedHeld(spammer, { title: 'Buy now', description: 'Click here for free money www.spam-offer.xyz' })).id } }
 
     const reason = 'Advertising content, not a civic complaint.'
     const reject = await api('POST', `/api/moderation/complaints/${data.complaint.id}/reject`, { token: tokenOf(admin), json: { reason } })

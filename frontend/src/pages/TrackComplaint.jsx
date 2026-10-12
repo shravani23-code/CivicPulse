@@ -335,6 +335,7 @@ function TrackComplaint() {
 
                 <strong>
                   {complaint.priority}
+                  {complaint.priority !== undefined && complaint.priority !== null ? '/100' : ''}
                 </strong>
 
               </div>

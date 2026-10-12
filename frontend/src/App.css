@@ -2398,6 +2398,41 @@ a {
 
 
 /* =========================================================
+   PRIORITY CELL (score + urgency + escalation)
+   ========================================================= */
+
+.priority-cell {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+}
+
+.priority-cell .priority-value small {
+  font-size: 11px;
+  font-weight: 600;
+  color: #9aa59e;
+}
+
+.escalation-badge {
+  display: inline-block;
+  padding: 4px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  background: #a13c2d;
+  color: #fff;
+  white-space: nowrap;
+}
+
+.priority-waiting {
+  flex-basis: 100%;
+  font-size: 12px;
+  color: #737b75;
+}
+
+
+/* =========================================================
    STATUS CELL (badge + select stacked)
    ========================================================= */
 

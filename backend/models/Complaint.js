@@ -109,9 +109,12 @@ const complaintSchema = new mongoose.Schema({
   // MODERATION (separate from operational `status`)
   //
   // Complaints created before moderation existed have no
-  // moderationStatus at all and are treated as approved everywhere
-  // (queries use $nin: ['needs_review', 'rejected']), so no migration
-  // is needed.
+  // moderationStatus at all and are treated as approved everywhere.
+  // Only 'rejected' (an administrator's decision) keeps a complaint out
+  // of the processing workflow (queries use $ne: 'rejected'). New
+  // complaints are always 'approved'; 'needs_review' only exists on
+  // older records and is admitted on the first admin status change.
+  // No migration is needed.
   // --------------------------------------
 
   moderationStatus: {
@@ -168,7 +171,8 @@ const complaintSchema = new mongoose.Schema({
   // --------------------------------------
   // SUSPICIOUS-SUBMISSION CHECK (services/suspicionDetector.js)
   //
-  // Explains WHY a complaint was held for review. Purely advisory: it
+  // Records review-worthy signals and their evidence (older complaints
+  // were held for review because of them). Purely advisory: it
   // never rejects a complaint, never touches the account, and is never
   // read by the priority engine (dsaEngines.js). Older complaints have
   // no `suspicion` and count as "normal".
