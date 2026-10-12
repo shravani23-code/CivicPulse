@@ -121,7 +121,7 @@ function Register() {
 
           <div className="form-group">
             <label htmlFor="register-mobile">
-              Mobile Number <span className="optional-label">(optional)</span>
+              Mobile Number
             </label>
             <input
               id="register-mobile"
