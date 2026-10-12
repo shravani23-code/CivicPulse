@@ -694,7 +694,7 @@ function ReportComplaint() {
                   {otpMessage && <small className="location-hint">{otpMessage}</small>}
 
                   <small>
-                    Not required to report a complaint. Used only to update you about your complaints, and never shown publicly. SMS is sent only if you turn on SMS updates under My Complaints.
+                    Not required to report a complaint. Used only to update you about your complaints, and never shown publicly.
                   </small>
 
                 </div>
